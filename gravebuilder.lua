@@ -19,38 +19,43 @@ local PUSH_DELAY    = 3
 local PUSH_COOLDOWN = 5
 
 -- ============================================================
--- ПОИСК HTTP (исправленный — не тестируем реальным запросом)
+-- ПОИСК HTTP ФУНКЦИИ (исправленный синтаксис)
 -- ============================================================
 local httpRequest = nil
 local httpName    = "не найдено"
 
-local function tryFind(name, getter)
-    local ok, fn = pcall(getter)
-    if ok and type(fn) == "function" then
-        print("[GraveSync] ✓ Найдено: " .. name)
-        httpRequest = fn
-        httpName    = name
-        return true
-    end
-    return false
-end
-
 print("[GraveSync] Ищем HTTP функцию...")
 
--- Порядок важен: сначала самые вероятные
-tryFind("syn.request",          function() return syn.request          end) or
-tryFind("request",              function() return request              end) or
-tryFind("http.request",         function() return http.request         end) or
-tryFind("http_request",         function() return http_request         end) or
-tryFind("fluxus.request",       function() return fluxus.request       end) or
-tryFind("genv.syn.request",     function() return getgenv().syn.request     end) or
-tryFind("genv.request",         function() return getgenv().request         end) or
-tryFind("genv.http_request",    function() return getgenv().http_request    end) or
-tryFind("genv.http.request",    function() return getgenv().http.request    end) or
-tryFind("genv.fluxus.request",  function() return getgenv().fluxus.request  end)
+-- ИСПРАВЛЕНО: цикл вместо цепочки or
+local httpCandidates = {
+    {"syn.request",         function() return syn.request         end},
+    {"request",             function() return request             end},
+    {"http.request",        function() return http.request        end},
+    {"http_request",        function() return http_request        end},
+    {"fluxus.request",      function() return fluxus.request      end},
+    {"genv.syn.request",    function() return getgenv().syn.request    end},
+    {"genv.request",        function() return getgenv().request        end},
+    {"genv.http_request",   function() return getgenv().http_request   end},
+    {"genv.http.request",   function() return getgenv().http.request   end},
+    {"genv.fluxus.request", function() return getgenv().fluxus.request end},
+}
+
+for _, candidate in ipairs(httpCandidates) do
+    local name   = candidate[1]
+    local getter = candidate[2]
+    local ok, fn = pcall(getter)
+    if ok and type(fn) == "function" then
+        httpRequest = fn
+        httpName    = name
+        print("[GraveSync] ✓ HTTP найден: " .. name)
+        break
+    else
+        print("[GraveSync] — нет: " .. name)
+    end
+end
 
 local syncEnabled = httpRequest ~= nil
-print("[GraveSync] HTTP: " .. httpName .. " | sync: " .. tostring(syncEnabled))
+print("[GraveSync] sync: " .. tostring(syncEnabled) .. " | fn: " .. httpName)
 
 -- ============================================================
 -- СОСТОЯНИЕ
@@ -87,40 +92,41 @@ end
 -- УТИЛИТЫ ПОСТРОЕНИЯ
 -- ============================================================
 local function makePart(model, name, size, cf, color, mat, tr)
-    local p           = Instance.new("Part")
-    p.Name            = name
-    p.Size            = size
-    p.CFrame          = cf
-    p.Anchored        = true
-    p.CanCollide      = false
-    p.Color           = color or Color3.fromRGB(140,140,140)
-    p.Material        = mat   or Enum.Material.SmoothPlastic
-    p.Transparency    = tr    or 0
-    p.CastShadow      = true
-    p.Parent          = model
+    local p        = Instance.new("Part")
+    p.Name         = name
+    p.Size         = size
+    p.CFrame       = cf
+    p.Anchored     = true
+    p.CanCollide   = false
+    p.Color        = color or Color3.fromRGB(140,140,140)
+    p.Material     = mat   or Enum.Material.SmoothPlastic
+    p.Transparency = tr    or 0
+    p.CastShadow   = true
+    p.Parent       = model
     return p
 end
 
 local function makeWedge(model, name, size, cf, color, mat)
-    local p           = Instance.new("WedgePart")
-    p.Name            = name
-    p.Size            = size
-    p.CFrame          = cf
-    p.Anchored        = true
-    p.CanCollide      = false
-    p.Color           = color or Color3.fromRGB(140,140,140)
-    p.Material        = mat   or Enum.Material.SmoothPlastic
-    p.Parent          = model
+    local p      = Instance.new("WedgePart")
+    p.Name       = name
+    p.Size       = size
+    p.CFrame     = cf
+    p.Anchored   = true
+    p.CanCollide = false
+    p.Color      = color or Color3.fromRGB(140,140,140)
+    p.Material   = mat   or Enum.Material.SmoothPlastic
+    p.Parent     = model
     return p
 end
 
--- Вспомогалка: Vector3 из трёх чисел → CFrame
-local function cf3(x, y, z)
-    return CFrame.new(Vector3.new(x, y, z))
+local function v3t(v)
+    return {x = v.X, y = v.Y, z = v.Z}
 end
 
-local function v3t(v)  return {x=v.X, y=v.Y, z=v.Z} end
-local function tv3(t)  return Vector3.new(t.x, t.y, t.z) end
+local function tv3(t)
+    return Vector3.new(t.x, t.y, t.z)
+end
+
 local function genId()
     return myClientId
         .. "_" .. math.floor(os.clock() * 10000)
@@ -172,6 +178,7 @@ end
 -- ============================================================
 local function binGet()
     if not syncEnabled then return nil, nil end
+
     local res = doReq({
         Url    = SYNC_URL .. "/latest",
         Method = "GET",
@@ -193,7 +200,7 @@ local function binGet()
         return {graves={}, removed={}}, 0
     end
     if code ~= 200 then
-        warn("[GraveSync] GET " .. code .. " | " .. tostring(body):sub(1,100))
+        warn("[GraveSync] GET " .. tostring(code) .. " | " .. tostring(body):sub(1,100))
         return nil, nil
     end
 
@@ -212,7 +219,9 @@ local function binPut(data)
     if not syncEnabled then return false end
 
     local now = os.clock()
-    if (now - lastPushTime) < PUSH_COOLDOWN then return false end
+    if (now - lastPushTime) < PUSH_COOLDOWN then
+        return false
+    end
     lastPushTime = now
 
     local safe = {
@@ -221,14 +230,20 @@ local function binPut(data)
     }
 
     -- Дедупликация removed
-    local seen, clean = {}, {}
+    local seen  = {}
+    local clean = {}
     for _, id in ipairs(safe.removed) do
-        if not seen[id] then seen[id]=true; table.insert(clean, id) end
+        if not seen[id] then
+            seen[id] = true
+            table.insert(clean, id)
+        end
     end
     if #clean > 100 then
-        local t2 = {}
-        for i = #clean-99, #clean do table.insert(t2, clean[i]) end
-        clean = t2
+        local trimmed = {}
+        for i = #clean - 99, #clean do
+            table.insert(trimmed, clean[i])
+        end
+        clean = trimmed
     end
     safe.removed = clean
 
@@ -250,9 +265,12 @@ local function binPut(data)
     if not res then return false end
 
     local code = res.StatusCode
-    if code == 429 then warn("[GraveSync] 429 при PUT!"); return false end
+    if code == 429 then
+        warn("[GraveSync] 429 при PUT!")
+        return false
+    end
     if code ~= 200 then
-        warn("[GraveSync] PUT " .. code .. " | " .. tostring(res.Body):sub(1,100))
+        warn("[GraveSync] PUT " .. tostring(code) .. " | " .. tostring(res.Body):sub(1,100))
         return false
     end
     return true
@@ -284,6 +302,7 @@ local function cloneAvatarParts(tp, parent)
         "RightUpperLeg","RightLowerLeg","RightFoot",
         "Torso","Left Arm","Right Arm","Left Leg","Right Leg",
     }
+
     local cloned = {}
     for _, nm in ipairs(bodyNames) do
         local p = char:FindFirstChild(nm)
@@ -322,6 +341,7 @@ local function cloneAvatarParts(tp, parent)
             ch:Clone().Parent = folder
         end
     end
+
     return folder, cloned, char
 end
 
@@ -340,7 +360,8 @@ local function positionLying(folder, cloned, origChar, centerCF)
             local origAcc = nil
             for _, oc in ipairs(origChar:GetChildren()) do
                 if oc:IsA("Accessory") and oc.Name == ch.Name then
-                    origAcc = oc; break
+                    origAcc = oc
+                    break
                 end
             end
             if handle and origAcc then
@@ -395,7 +416,7 @@ local function placeHead(tp, parent, headPos)
 end
 
 -- ============================================================
--- СТРОИТЕЛИ (все CFrame через Vector3 — баг исправлен)
+-- СТРОИТЕЛИ
 -- ============================================================
 local function buildGrave(origin, style, pName, tp)
     local m    = Instance.new("Model")
@@ -411,58 +432,58 @@ local function buildGrave(origin, style, pName, tp)
         CFrame.new(origin + Vector3.new(0, 0.27, 0)),
         Color3.fromRGB(65,50,35), Enum.Material.Grass)
 
-    -- Надгробный камень стоит позади (-Z от центра)
-    local stonePos = Vector3.new(origin.X, origin.Y + 1.9, origin.Z - 2.8)
-    local capPos   = Vector3.new(origin.X, origin.Y + 3.7, origin.Z - 2.8)
+    local stonePos = Vector3.new(origin.X, origin.Y + 1.9,  origin.Z - 2.8)
+    local capPos   = Vector3.new(origin.X, origin.Y + 3.7,  origin.Z - 2.8)
     local crossZ   = origin.Z - 2.8
 
     if style == "rip" then
         local stone = makePart(m, "Stone",
             Vector3.new(2.4, 3.2, 0.45),
-            CFrame.new(stonePos),   -- ФИХ: Vector3, не три числа
+            CFrame.new(stonePos),
             SG)
 
-        -- ФИХ: CFrame.new(Vector3) * Angles — правильно
         local cap = makePart(m, "Cap",
             Vector3.new(2.4, 0.45, 0.45),
             CFrame.new(capPos) * CFrame.Angles(0, 0, math.rad(90)),
             SG)
 
-        local mesh        = Instance.new("SpecialMesh")
-        mesh.MeshType     = Enum.MeshType.Cylinder
-        mesh.Scale        = Vector3.new(1, 1, 1)
-        mesh.Parent       = cap
+        local mesh    = Instance.new("SpecialMesh")
+        mesh.MeshType = Enum.MeshType.Cylinder
+        mesh.Scale    = Vector3.new(1, 1, 1)
+        mesh.Parent   = cap
 
-        local sg              = Instance.new("SurfaceGui")
-        sg.Face               = Enum.NormalId.Back
-        sg.SizingMode         = Enum.SurfaceGuiSizingMode.PixelsPerStud
-        sg.PixelsPerStud      = 60
-        sg.Parent             = stone
+        local sg          = Instance.new("SurfaceGui")
+        sg.Face           = Enum.NormalId.Back
+        sg.SizingMode     = Enum.SurfaceGuiSizingMode.PixelsPerStud
+        sg.PixelsPerStud  = 60
+        sg.Parent         = stone
 
         local lb              = Instance.new("TextLabel")
-        lb.Size               = UDim2.new(1,0,1,0)
+        lb.Size               = UDim2.new(1, 0, 1, 0)
         lb.BackgroundTransparency = 1
-        lb.TextColor3         = Color3.fromRGB(30,30,30)
+        lb.TextColor3         = Color3.fromRGB(30, 30, 30)
         lb.Text               = "R.I.P\n" .. pName
         lb.Font               = Enum.Font.GothamBold
         lb.TextScaled         = true
         lb.Parent             = sg
 
     elseif style == "cross" then
-        -- ФИХ: все через Vector3.new(...)
         makePart(m, "CV",
             Vector3.new(0.35, 4.2, 0.35),
-            CFrame.new(Vector3.new(origin.X, origin.Y+2.4, crossZ)), DG)
+            CFrame.new(Vector3.new(origin.X, origin.Y + 2.4, crossZ)),
+            DG)
         makePart(m, "CH",
             Vector3.new(2.2, 0.35, 0.35),
-            CFrame.new(Vector3.new(origin.X, origin.Y+3.4, crossZ)), DG)
+            CFrame.new(Vector3.new(origin.X, origin.Y + 3.4, crossZ)),
+            DG)
         makePart(m, "CB",
             Vector3.new(1.0, 0.25, 0.6),
-            CFrame.new(Vector3.new(origin.X, origin.Y+0.38, crossZ)), DG)
+            CFrame.new(Vector3.new(origin.X, origin.Y + 0.38, crossZ)),
+            DG)
     end
 
     if tp then
-        placeHead(tp, m, Vector3.new(origin.X, origin.Y+1.6, origin.Z+1.0))
+        placeHead(tp, m, Vector3.new(origin.X, origin.Y + 1.6, origin.Z + 1.0))
     end
 
     m.PrimaryPart = slab
@@ -496,22 +517,23 @@ local function buildCrypt(origin, pName, tp)
     local ped  = makeWedge(m, "Ped",
         Vector3.new(w+0.8, pedH, 2.5),
         CFrame.new(origin+Vector3.new(0, h+pedH/2+0.4, d/2+1.25))
-            * CFrame.Angles(0, math.rad(180), 0), SC)
+            * CFrame.Angles(0, math.rad(180), 0),
+        SC)
 
-    local sg          = Instance.new("SurfaceGui")
-    sg.Face           = Enum.NormalId.Front
-    sg.SizingMode     = Enum.SurfaceGuiSizingMode.PixelsPerStud
-    sg.PixelsPerStud  = 35
-    sg.Parent         = ped
+    local sg         = Instance.new("SurfaceGui")
+    sg.Face          = Enum.NormalId.Front
+    sg.SizingMode    = Enum.SurfaceGuiSizingMode.PixelsPerStud
+    sg.PixelsPerStud = 35
+    sg.Parent        = ped
 
-    local lb          = Instance.new("TextLabel")
-    lb.Size           = UDim2.new(1,0,1,0)
+    local lb              = Instance.new("TextLabel")
+    lb.Size               = UDim2.new(1,0,1,0)
     lb.BackgroundTransparency = 1
-    lb.TextColor3     = Color3.fromRGB(20,20,20)
-    lb.Text           = pName
-    lb.Font           = Enum.Font.GothamBold
-    lb.TextScaled     = true
-    lb.Parent         = sg
+    lb.TextColor3         = Color3.fromRGB(20,20,20)
+    lb.Text               = pName
+    lb.Font               = Enum.Font.GothamBold
+    lb.TextScaled         = true
+    lb.Parent             = sg
 
     makePart(m,"RCV", Vector3.new(0.3,2.5,0.3),
         CFrame.new(origin+Vector3.new(0,h+1.65,0)), DG)
@@ -525,15 +547,17 @@ local function buildCrypt(origin, pName, tp)
 
     local sz = -d/2 + 4.5
     makePart(m,"SBase", Vector3.new(2.6,0.7,6),
-        CFrame.new(origin+Vector3.new(0,0.65,sz)), Color3.fromRGB(160,155,145))
-    makePart(m,"SLid",  Vector3.new(2.4,0.28,5.8),
-        CFrame.new(origin+Vector3.new(0,1.04,sz)), Color3.fromRGB(175,170,160))
+        CFrame.new(origin+Vector3.new(0,0.65,sz)),
+        Color3.fromRGB(160,155,145))
+    makePart(m,"SLid", Vector3.new(2.4,0.28,5.8),
+        CFrame.new(origin+Vector3.new(0,1.04,sz)),
+        Color3.fromRGB(175,170,160))
 
     if tp and tp.Character then
         local folder, cloned, origChar = cloneAvatarParts(tp, m)
         if folder and cloned then
             positionLying(folder, cloned, origChar,
-                CFrame.new(origin+Vector3.new(0,1.4,sz))
+                CFrame.new(origin+Vector3.new(0, 1.4, sz))
                     * CFrame.Angles(math.rad(-90), math.rad(180), 0))
         end
     end
@@ -549,12 +573,13 @@ local function buildChapel(origin)
     local w,d,h = 11, 16, 8
 
     makePart(m,"Found", Vector3.new(w+1.5,0.6,d+1.5),
-        CFrame.new(origin+Vector3.new(0,0.3,0)), Color3.fromRGB(100,95,85))
-    makePart(m,"WB",    Vector3.new(w,h,0.55),
+        CFrame.new(origin+Vector3.new(0,0.3,0)),
+        Color3.fromRGB(100,95,85))
+    makePart(m,"WB", Vector3.new(w,h,0.55),
         CFrame.new(origin+Vector3.new(0,h/2,-d/2)), SC)
-    makePart(m,"WL",    Vector3.new(0.55,h,d),
+    makePart(m,"WL", Vector3.new(0.55,h,d),
         CFrame.new(origin+Vector3.new(-w/2,h/2,0)), SC)
-    makePart(m,"WR",    Vector3.new(0.55,h,d),
+    makePart(m,"WR", Vector3.new(0.55,h,d),
         CFrame.new(origin+Vector3.new(w/2,h/2,0)), SC)
 
     local doorW = 3.5
@@ -571,7 +596,7 @@ local function buildChapel(origin)
         CFrame.new(origin+Vector3.new(0,h+rH/2,-d/4))
             * CFrame.Angles(0,math.rad(180),0), RC)
     makeWedge(m,"RoofF", Vector3.new(w+1,rH,d/2+0.5),
-        CFrame.new(origin+Vector3.new(0,h+rH/2, d/4)), RC)
+        CFrame.new(origin+Vector3.new(0,h+rH/2,d/4)), RC)
 
     local tW     = 4
     local tH     = 13
@@ -597,7 +622,7 @@ local function buildChapel(origin)
 
     local fW = w + 10
     local fD = d + 10
-    local fH = 1.3    -- ФИХ: переименовано, нет конфликта с h
+    local fH = 1.3
     local fC = Color3.fromRGB(55,48,40)
 
     makePart(m,"FkB", Vector3.new(fW,fH,0.2),
@@ -628,8 +653,8 @@ local function buildCemetery(origin, pList)
     }
     local styles = {"rip","cross","rip","cross","rip","cross"}
     for i, off in ipairs(offsets) do
-        local tp  = pList[i]
-        local pn  = tp and tp.Name or ("Soul_"..i)
+        local tp = pList[i]
+        local pn = tp and tp.Name or ("Soul_"..i)
         buildGrave(origin + off, styles[i], pn, tp)
     end
     buildChapel(origin + Vector3.new(0, 0, -22))
@@ -642,7 +667,9 @@ local function clearGraves()
             v.Name:sub(1,6) == "Crypt_" or
             v.Name == "Chapel" or
             v.Name == "Cemetery"
-        ) then v:Destroy() end
+        ) then
+            v:Destroy()
+        end
     end
 end
 
@@ -652,9 +679,8 @@ end
 local function buildFromPayload(payload)
     if not payload or not payload.id then return end
     if builtModels[payload.id] then return end
-
-    -- Безопасно конвертируем origin
     if not payload.origin then return end
+
     local ok, origin = pcall(tv3, payload.origin)
     if not ok then
         warn("[GraveSync] tv3 error: " .. tostring(origin))
@@ -714,21 +740,28 @@ local function syncBuild(payload)
     localGraves[payload.id] = payload
     task.spawn(function()
         local data = binGet()
-        if not data then data = {graves={}, removed={}} end
-        -- Убираем из removed
+        if not data then
+            data = {graves={}, removed={}}
+        end
         local newRem = {}
         for _, id in ipairs(data.removed) do
-            if id ~= payload.id then table.insert(newRem, id) end
+            if id ~= payload.id then
+                table.insert(newRem, id)
+            end
         end
         data.removed = newRem
-        -- Добавляем если нет
         local exists = false
         for _, g in ipairs(data.graves) do
-            if g.id == payload.id then exists=true; break end
+            if g.id == payload.id then
+                exists = true
+                break
+            end
         end
-        if not exists then table.insert(data.graves, payload) end
+        if not exists then
+            table.insert(data.graves, payload)
+        end
         schedulePush(data)
-        print("[GraveSync] → Push запланирован: " .. payload.playerName)
+        print("[GraveSync] → Push запланирован: " .. tostring(payload.playerName))
     end)
 end
 
@@ -738,10 +771,14 @@ local function syncRemove(ids)
         local data = binGet()
         if not data then return end
         local idSet = {}
-        for _, id in ipairs(ids) do idSet[id] = true end
+        for _, id in ipairs(ids) do
+            idSet[id] = true
+        end
         local newG = {}
         for _, g in ipairs(data.graves) do
-            if not idSet[g.id] then table.insert(newG, g) end
+            if not idSet[g.id] then
+                table.insert(newG, g)
+            end
         end
         data.graves = newG
         for _, id in ipairs(ids) do
@@ -749,14 +786,18 @@ local function syncRemove(ids)
             localGraves[id] = nil
         end
         schedulePush(data)
-        print("[GraveSync] → Удаление запланировано: " .. #ids)
+        print("[GraveSync] → Удаление: " .. #ids)
     end)
 end
 
 local function syncRemoveAll()
     local ids = {}
-    for id in pairs(localGraves) do table.insert(ids, id) end
-    if #ids > 0 then syncRemove(ids) end
+    for id in pairs(localGraves) do
+        table.insert(ids, id)
+    end
+    if #ids > 0 then
+        syncRemove(ids)
+    end
 end
 
 -- ============================================================
@@ -793,7 +834,9 @@ RunService.Heartbeat:Connect(function(dt)
                 end
             end
         end)
-        if not ok then warn("[GraveSync] poll error: " .. tostring(err)) end
+        if not ok then
+            warn("[GraveSync] poll error: " .. tostring(err))
+        end
         polling = false
     end)
 end)
@@ -804,7 +847,7 @@ task.delay(4, function()
         warn("[GraveSync] HTTP недоступен")
         return
     end
-    print("[GraveSync] Инициализация...")
+    print("[GraveSync] Инициализация bin...")
     initBin()
     task.wait(2)
     local data, version = binGet()
@@ -853,8 +896,10 @@ frame.InputBegan:Connect(function(i)
 end)
 frame.InputChanged:Connect(function(i)
     if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
-        local d = i.Position-ds
-        frame.Position = UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y)
+        local d = i.Position - ds
+        frame.Position = UDim2.new(
+            sp.X.Scale, sp.X.Offset + d.X,
+            sp.Y.Scale, sp.Y.Offset + d.Y)
     end
 end)
 frame.InputEnded:Connect(function(i)
@@ -898,9 +943,10 @@ sd.Parent                = tb
 if syncEnabled then
     local bt = 0
     RunService.Heartbeat:Connect(function(dt)
-        bt = bt+dt; if bt>1 then bt=0 end
+        bt = bt + dt
+        if bt > 1 then bt = 0 end
         if sd and sd.Parent then
-            sd.TextTransparency = (bt>.5) and .4 or 0
+            sd.TextTransparency = (bt > 0.5) and 0.4 or 0
         end
     end)
 end
@@ -921,34 +967,49 @@ sl.Padding = UDim.new(0,8)
 sl.Parent  = scroll
 
 local sp2 = Instance.new("UIPadding")
-sp2.PaddingTop=UDim.new(0,10); sp2.PaddingLeft=UDim.new(0,10)
-sp2.PaddingRight=UDim.new(0,10); sp2.PaddingBottom=UDim.new(0,10)
-sp2.Parent = scroll
+sp2.PaddingTop    = UDim.new(0,10)
+sp2.PaddingLeft   = UDim.new(0,10)
+sp2.PaddingRight  = UDim.new(0,10)
+sp2.PaddingBottom = UDim.new(0,10)
+sp2.Parent        = scroll
 
 local function ac()
-    scroll.CanvasSize = UDim2.new(0,0,0, sl.AbsoluteContentSize.Y+20)
+    scroll.CanvasSize = UDim2.new(0,0,0, sl.AbsoluteContentSize.Y + 20)
 end
 sl:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(ac)
 
 local function sec(txt)
     local l = Instance.new("TextLabel")
-    l.Size=UDim2.new(1,0,0,20); l.BackgroundTransparency=1
-    l.TextColor3=Color3.fromRGB(140,140,140); l.Text=txt
-    l.Font=Enum.Font.GothamBold; l.TextSize=11
-    l.TextXAlignment=Enum.TextXAlignment.Left; l.Parent=scroll
+    l.Size                  = UDim2.new(1,0,0,20)
+    l.BackgroundTransparency = 1
+    l.TextColor3            = Color3.fromRGB(140,140,140)
+    l.Text                  = txt
+    l.Font                  = Enum.Font.GothamBold
+    l.TextSize              = 11
+    l.TextXAlignment        = Enum.TextXAlignment.Left
+    l.Parent                = scroll
     return l
 end
 
 local function mkBtn(txt, bg, tc)
     local orig = bg or Color3.fromRGB(55,55,55)
-    local b = Instance.new("TextButton")
-    b.Size=UDim2.new(1,0,0,34); b.BackgroundColor3=orig
-    b.TextColor3=tc or Color3.fromRGB(220,220,220); b.Text=txt
-    b.Font=Enum.Font.GothamBold; b.TextSize=13
-    b.AutoButtonColor=false; b.Parent=scroll
-    addCorner(b,6); addStroke(b,Color3.fromRGB(70,70,70))
-    b.MouseEnter:Connect(function() b.BackgroundColor3=orig:Lerp(Color3.fromRGB(255,255,255),.1) end)
-    b.MouseLeave:Connect(function() b.BackgroundColor3=orig end)
+    local b    = Instance.new("TextButton")
+    b.Size             = UDim2.new(1,0,0,34)
+    b.BackgroundColor3 = orig
+    b.TextColor3       = tc or Color3.fromRGB(220,220,220)
+    b.Text             = txt
+    b.Font             = Enum.Font.GothamBold
+    b.TextSize         = 13
+    b.AutoButtonColor  = false
+    b.Parent           = scroll
+    addCorner(b,6)
+    addStroke(b, Color3.fromRGB(70,70,70))
+    b.MouseEnter:Connect(function()
+        b.BackgroundColor3 = orig:Lerp(Color3.fromRGB(255,255,255), 0.1)
+    end)
+    b.MouseLeave:Connect(function()
+        b.BackgroundColor3 = orig
+    end)
     return b
 end
 
@@ -956,187 +1017,293 @@ end
 sec("👥  Игроки на сервере:")
 
 local pscroll = Instance.new("ScrollingFrame")
-pscroll.Size=UDim2.new(1,0,0,110); pscroll.BackgroundColor3=Color3.fromRGB(30,30,30)
-pscroll.BorderSizePixel=0; pscroll.ScrollBarThickness=3
-pscroll.ScrollBarImageColor3=Color3.fromRGB(80,80,80)
-pscroll.CanvasSize=UDim2.new(0,0,0,0); pscroll.Parent=scroll
+pscroll.Size                 = UDim2.new(1,0,0,110)
+pscroll.BackgroundColor3     = Color3.fromRGB(30,30,30)
+pscroll.BorderSizePixel      = 0
+pscroll.ScrollBarThickness   = 3
+pscroll.ScrollBarImageColor3 = Color3.fromRGB(80,80,80)
+pscroll.CanvasSize           = UDim2.new(0,0,0,0)
+pscroll.Parent               = scroll
 addCorner(pscroll,6)
 
 local pll = Instance.new("UIListLayout")
-pll.Padding=UDim.new(0,3); pll.Parent=pscroll
+pll.Padding = UDim.new(0,3)
+pll.Parent  = pscroll
 
 local plp = Instance.new("UIPadding")
-plp.PaddingTop=UDim.new(0,4); plp.PaddingLeft=UDim.new(0,4)
-plp.PaddingRight=UDim.new(0,4); plp.Parent=pscroll
+plp.PaddingTop   = UDim.new(0,4)
+plp.PaddingLeft  = UDim.new(0,4)
+plp.PaddingRight = UDim.new(0,4)
+plp.Parent       = pscroll
 
 local selP  = {}
 local pBtns = {}
 
 local ml = Instance.new("TextLabel")
-ml.Size=UDim2.new(1,0,0,18); ml.BackgroundTransparency=1
-ml.TextColor3=Color3.fromRGB(120,200,120); ml.Text="Выбрано: никого"
-ml.Font=Enum.Font.Gotham; ml.TextSize=11
-ml.TextXAlignment=Enum.TextXAlignment.Left; ml.Parent=scroll
+ml.Size                  = UDim2.new(1,0,0,18)
+ml.BackgroundTransparency = 1
+ml.TextColor3            = Color3.fromRGB(120,200,120)
+ml.Text                  = "Выбрано: никого"
+ml.Font                  = Enum.Font.Gotham
+ml.TextSize              = 11
+ml.TextXAlignment        = Enum.TextXAlignment.Left
+ml.Parent                = scroll
 
 local function updML()
-    local ns={}
-    for k,v in pairs(selP) do
-        if type(k)=="userdata" then table.insert(ns,k.Name)
-        elseif type(k)=="string" and k:sub(1,10)=="__offline__" then
-            table.insert(ns,v.Name.."✍") end
+    local ns = {}
+    for k, v in pairs(selP) do
+        if type(k) == "userdata" then
+            table.insert(ns, k.Name)
+        elseif type(k) == "string" and k:sub(1,10) == "__offline__" then
+            table.insert(ns, v.Name .. "✍")
+        end
     end
-    ml.Text=#ns==0 and "Выбрано: никого"
-        or "Выбрано ("..#ns.."): "..table.concat(ns,", ")
+    if #ns == 0 then
+        ml.Text = "Выбрано: никого"
+    else
+        ml.Text = "Выбрано (" .. #ns .. "): " .. table.concat(ns, ", ")
+    end
 end
 
 local function refPL()
-    for _,b in ipairs(pBtns) do if b and b.Parent then b:Destroy() end end
-    pBtns={}
-    for _,plr in ipairs(Players:GetPlayers()) do
-        local b=Instance.new("TextButton")
-        b.Size=UDim2.new(1,-8,0,24)
-        b.BackgroundColor3=selP[plr] and Color3.fromRGB(55,95,55) or Color3.fromRGB(45,45,48)
-        b.TextColor3=Color3.fromRGB(200,200,200); b.Text="  "..plr.Name
-        b.Font=Enum.Font.Gotham; b.TextSize=12
-        b.TextXAlignment=Enum.TextXAlignment.Left; b.AutoButtonColor=false
-        b.Parent=pscroll; addCorner(b,4)
+    for _, b in ipairs(pBtns) do
+        if b and b.Parent then b:Destroy() end
+    end
+    pBtns = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local b = Instance.new("TextButton")
+        b.Size             = UDim2.new(1,-8,0,24)
+        b.BackgroundColor3 = selP[plr]
+            and Color3.fromRGB(55,95,55)
+            or  Color3.fromRGB(45,45,48)
+        b.TextColor3      = Color3.fromRGB(200,200,200)
+        b.Text            = "  " .. plr.Name
+        b.Font            = Enum.Font.Gotham
+        b.TextSize        = 12
+        b.TextXAlignment  = Enum.TextXAlignment.Left
+        b.AutoButtonColor = false
+        b.Parent          = pscroll
+        addCorner(b,4)
         b.MouseButton1Click:Connect(function()
-            selP[plr]=selP[plr] and nil or true
-            b.BackgroundColor3=selP[plr] and Color3.fromRGB(55,95,55) or Color3.fromRGB(45,45,48)
+            if selP[plr] then
+                selP[plr] = nil
+                b.BackgroundColor3 = Color3.fromRGB(45,45,48)
+            else
+                selP[plr] = true
+                b.BackgroundColor3 = Color3.fromRGB(55,95,55)
+            end
             updML()
         end)
-        table.insert(pBtns,b)
+        table.insert(pBtns, b)
     end
-    pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8)
+    pscroll.CanvasSize = UDim2.new(0,0,0, pll.AbsoluteContentSize.Y + 8)
 end
 
 refPL()
 pll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8)
+    pscroll.CanvasSize = UDim2.new(0,0,0, pll.AbsoluteContentSize.Y + 8)
 end)
 
-mkBtn("🔄  Обновить список",Color3.fromRGB(40,40,60))
-    .MouseButton1Click:Connect(function() selP={}; refPL(); updML() end)
+local rlb = mkBtn("🔄  Обновить список", Color3.fromRGB(40,40,60))
+rlb.MouseButton1Click:Connect(function()
+    selP = {}
+    refPL()
+    updML()
+end)
 
 -- Ввод вручную
 sec("✍️  Имя вручную (офлайн):")
 
-local mi=Instance.new("TextBox")
-mi.Size=UDim2.new(1,0,0,32); mi.BackgroundColor3=Color3.fromRGB(38,38,38)
-mi.TextColor3=Color3.fromRGB(255,255,255); mi.PlaceholderText="Имя игрока..."
-mi.PlaceholderColor3=Color3.fromRGB(90,90,90); mi.Text=""
-mi.Font=Enum.Font.Gotham; mi.TextSize=13; mi.ClearTextOnFocus=false
-mi.Parent=scroll; addCorner(mi,6); addStroke(mi,Color3.fromRGB(60,60,70))
+local mi = Instance.new("TextBox")
+mi.Size              = UDim2.new(1,0,0,32)
+mi.BackgroundColor3  = Color3.fromRGB(38,38,38)
+mi.TextColor3        = Color3.fromRGB(255,255,255)
+mi.PlaceholderText   = "Имя игрока..."
+mi.PlaceholderColor3 = Color3.fromRGB(90,90,90)
+mi.Text              = ""
+mi.Font              = Enum.Font.Gotham
+mi.TextSize          = 13
+mi.ClearTextOnFocus  = false
+mi.Parent            = scroll
+addCorner(mi,6)
+addStroke(mi, Color3.fromRGB(60,60,70))
 
-mkBtn("➕  Добавить в выбор",Color3.fromRGB(40,60,80))
-    .MouseButton1Click:Connect(function()
-        local name=(mi.Text or ""):match("^%s*(.-)%s*$")
-        if not name or name=="" then return end
-        local onl=Players:FindFirstChild(name)
-        if onl then selP[onl]=true; refPL()
-        else
-            local key="__offline__"..name
-            if not selP[key] then
-                selP[key]={Name=name,Character=nil}
-                local l2=Instance.new("TextLabel")
-                l2.Size=UDim2.new(1,-8,0,24); l2.BackgroundColor3=Color3.fromRGB(60,50,30)
-                l2.TextColor3=Color3.fromRGB(220,200,150); l2.Text="  ✍ "..name.." (офлайн)"
-                l2.Font=Enum.Font.Gotham; l2.TextSize=12
-                l2.TextXAlignment=Enum.TextXAlignment.Left; l2.Parent=pscroll
-                addCorner(l2,4); table.insert(pBtns,l2)
-                pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8)
-            end
+local amb = mkBtn("➕  Добавить в выбор", Color3.fromRGB(40,60,80))
+amb.MouseButton1Click:Connect(function()
+    local name = (mi.Text or ""):match("^%s*(.-)%s*$")
+    if not name or name == "" then return end
+    local onl = Players:FindFirstChild(name)
+    if onl then
+        selP[onl] = true
+        refPL()
+    else
+        local key = "__offline__" .. name
+        if not selP[key] then
+            selP[key] = {Name=name, Character=nil}
+            local l2 = Instance.new("TextLabel")
+            l2.Size             = UDim2.new(1,-8,0,24)
+            l2.BackgroundColor3 = Color3.fromRGB(60,50,30)
+            l2.TextColor3       = Color3.fromRGB(220,200,150)
+            l2.Text             = "  ✍ " .. name .. " (офлайн)"
+            l2.Font             = Enum.Font.Gotham
+            l2.TextSize         = 12
+            l2.TextXAlignment   = Enum.TextXAlignment.Left
+            l2.Parent           = pscroll
+            addCorner(l2,4)
+            table.insert(pBtns, l2)
+            pscroll.CanvasSize = UDim2.new(0,0,0, pll.AbsoluteContentSize.Y+8)
         end
-        updML(); mi.Text=""
-    end)
+    end
+    updML()
+    mi.Text = ""
+end)
 
 -- Тип
 sec("🪦  Тип могилы:")
-local stNms={"RIP камень","Крест","Склеп"}
-local stCls={Color3.fromRGB(55,55,85),Color3.fromRGB(75,45,45),Color3.fromRGB(45,65,45)}
-local stIdx=1
-local stb=mkBtn("▶  "..stNms[1],stCls[1])
+local stNms = {"RIP камень","Крест","Склеп"}
+local stCls = {
+    Color3.fromRGB(55,55,85),
+    Color3.fromRGB(75,45,45),
+    Color3.fromRGB(45,65,45),
+}
+local stIdx = 1
+local stb   = mkBtn("▶  " .. stNms[1], stCls[1])
 stb.MouseButton1Click:Connect(function()
-    stIdx=stIdx%#stNms+1; stb.Text="▶  "..stNms[stIdx]; stb.BackgroundColor3=stCls[stIdx]
+    stIdx = stIdx % #stNms + 1
+    stb.Text             = "▶  " .. stNms[stIdx]
+    stb.BackgroundColor3 = stCls[stIdx]
 end)
 
 -- Режим
 sec("♻️  Режим размещения:")
-local repMode=false
-local repBtn=mkBtn("▶  Добавить рядом",Color3.fromRGB(50,50,50))
+local repMode = false
+local repBtn  = mkBtn("▶  Добавить рядом", Color3.fromRGB(50,50,50))
 repBtn.MouseButton1Click:Connect(function()
-    repMode=not repMode
-    repBtn.Text=repMode and "▶  Заменить существующие" or "▶  Добавить рядом"
-    repBtn.BackgroundColor3=repMode and Color3.fromRGB(90,50,20) or Color3.fromRGB(50,50,50)
+    repMode = not repMode
+    repBtn.Text             = repMode
+        and "▶  Заменить существующие"
+        or  "▶  Добавить рядом"
+    repBtn.BackgroundColor3 = repMode
+        and Color3.fromRGB(90,50,20)
+        or  Color3.fromRGB(50,50,50)
 end)
 
 -- Действия
 sec("⚙️  Действия:")
 
 local function getPL()
-    local lst={}
-    for k,v in pairs(selP) do
-        if type(k)=="userdata" then table.insert(lst,k)
-        elseif type(k)=="string" and k:sub(1,10)=="__offline__" then table.insert(lst,v) end
+    local lst = {}
+    for k, v in pairs(selP) do
+        if type(k) == "userdata" then
+            table.insert(lst, k)
+        elseif type(k) == "string" and k:sub(1,10) == "__offline__" then
+            table.insert(lst, v)
+        end
     end
-    if #lst==0 then table.insert(lst,LocalPlayer) end
+    if #lst == 0 then
+        table.insert(lst, LocalPlayer)
+    end
     return lst
 end
 
 local function footPos()
-    local c=LocalPlayer.Character; if not c then return Vector3.new(0,0,0) end
-    local hrp=c:FindFirstChild("HumanoidRootPart"); if not hrp then return Vector3.new(0,0,0) end
-    return Vector3.new(hrp.Position.X, hrp.Position.Y-3, hrp.Position.Z)
+    local c = LocalPlayer.Character
+    if not c then return Vector3.new(0,0,0) end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    if not hrp then return Vector3.new(0,0,0) end
+    return Vector3.new(hrp.Position.X, hrp.Position.Y - 3, hrp.Position.Z)
 end
 
 local function bye()
-    screenGui:Destroy(); pcall(function() script:Destroy() end)
+    screenGui:Destroy()
+    pcall(function() script:Destroy() end)
 end
 
--- Одиночная
-mkBtn("⚰️  Построить могилу",Color3.fromRGB(55,130,55))
-    .MouseButton1Click:Connect(function()
-        if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-        local fp=footPos(); local sk=({"rip","cross","crypt"})[stIdx]
-        local pl=getPL(); local tp=pl[1]; local pn=tp and tp.Name or LocalPlayer.Name
-        local payload={id=genId(),graveType=sk=="crypt" and "crypt" or "grave",
-            origin=v3t(fp),playerName=pn,style=sk,owner=myClientId,timestamp=os.time()}
-        local mdl=sk=="crypt" and buildCrypt(fp,pn,tp) or buildGrave(fp,sk,pn,tp)
-        builtModels[payload.id]=mdl; syncBuild(payload); bye()
-    end)
+-- Одиночная могила
+local b1 = mkBtn("⚰️  Построить могилу", Color3.fromRGB(55,130,55))
+b1.MouseButton1Click:Connect(function()
+    if repMode then clearGraves(); syncRemoveAll(); builtModels = {} end
+    local fp  = footPos()
+    local sk  = ({"rip","cross","crypt"})[stIdx]
+    local pl  = getPL()
+    local tp  = pl[1]
+    local pn  = tp and tp.Name or LocalPlayer.Name
+    local payload = {
+        id         = genId(),
+        graveType  = (sk == "crypt") and "crypt" or "grave",
+        origin     = v3t(fp),
+        playerName = pn,
+        style      = sk,
+        owner      = myClientId,
+        timestamp  = os.time(),
+    }
+    local mdl
+    if sk == "crypt" then
+        mdl = buildCrypt(fp, pn, tp)
+    else
+        mdl = buildGrave(fp, sk, pn, tp)
+    end
+    builtModels[payload.id] = mdl
+    syncBuild(payload)
+    bye()
+end)
 
 -- Кладбище
-mkBtn("🏚️  Кладбище + Часовня",Color3.fromRGB(100,65,30))
-    .MouseButton1Click:Connect(function()
-        if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-        local fp=footPos(); local pl=getPL()
-        local ns={}; for _,p in ipairs(pl) do table.insert(ns,p.Name) end
-        buildCemetery(fp,pl)
-        local payload={id=genId(),graveType="cemetery",origin=v3t(fp),
-            playerName=LocalPlayer.Name,playerNames=ns,owner=myClientId,timestamp=os.time()}
-        builtModels[payload.id]=true; syncBuild(payload); bye()
-    end)
+local b2 = mkBtn("🏚️  Кладбище + Часовня", Color3.fromRGB(100,65,30))
+b2.MouseButton1Click:Connect(function()
+    if repMode then clearGraves(); syncRemoveAll(); builtModels = {} end
+    local fp = footPos()
+    local pl = getPL()
+    local ns = {}
+    for _, p in ipairs(pl) do table.insert(ns, p.Name) end
+    buildCemetery(fp, pl)
+    local payload = {
+        id          = genId(),
+        graveType   = "cemetery",
+        origin      = v3t(fp),
+        playerName  = LocalPlayer.Name,
+        playerNames = ns,
+        owner       = myClientId,
+        timestamp   = os.time(),
+    }
+    builtModels[payload.id] = true
+    syncBuild(payload)
+    bye()
+end)
 
 -- Склеп
-mkBtn("🏛️  Построить склеп",Color3.fromRGB(40,60,80))
-    .MouseButton1Click:Connect(function()
-        if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-        local fp=footPos(); local pl=getPL(); local tp=pl[1]
-        local pn=tp and tp.Name or LocalPlayer.Name
-        local payload={id=genId(),graveType="crypt",origin=v3t(fp),
-            playerName=pn,style="crypt",owner=myClientId,timestamp=os.time()}
-        builtModels[payload.id]=buildCrypt(fp,pn,tp); syncBuild(payload); bye()
-    end)
+local b3 = mkBtn("🏛️  Построить склеп", Color3.fromRGB(40,60,80))
+b3.MouseButton1Click:Connect(function()
+    if repMode then clearGraves(); syncRemoveAll(); builtModels = {} end
+    local fp = footPos()
+    local pl = getPL()
+    local tp = pl[1]
+    local pn = tp and tp.Name or LocalPlayer.Name
+    local payload = {
+        id         = genId(),
+        graveType  = "crypt",
+        origin     = v3t(fp),
+        playerName = pn,
+        style      = "crypt",
+        owner      = myClientId,
+        timestamp  = os.time(),
+    }
+    builtModels[payload.id] = buildCrypt(fp, pn, tp)
+    syncBuild(payload)
+    bye()
+end)
 
 -- Удалить
-mkBtn("🗑️  Удалить все могилы",Color3.fromRGB(80,25,25))
-    .MouseButton1Click:Connect(function()
-        clearGraves(); syncRemoveAll(); builtModels={}
-    end)
+local b4 = mkBtn("🗑️  Удалить все могилы", Color3.fromRGB(80,25,25))
+b4.MouseButton1Click:Connect(function()
+    clearGraves()
+    syncRemoveAll()
+    builtModels = {}
+end)
 
 -- Закрыть
-mkBtn("✖  Закрыть",Color3.fromRGB(40,40,40),Color3.fromRGB(180,180,180))
-    .MouseButton1Click:Connect(bye)
+local b5 = mkBtn("✖  Закрыть", Color3.fromRGB(40,40,40), Color3.fromRGB(180,180,180))
+b5.MouseButton1Click:Connect(bye)
 
 ac()
-print("[GraveBuilder] ✓ " .. myClientId .. " | HTTP: " .. httpName)
+print("[GraveBuilder] ✓ " .. myClientId .. " | " .. httpName)
