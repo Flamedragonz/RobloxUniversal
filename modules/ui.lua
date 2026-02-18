@@ -3,16 +3,11 @@
     ║  MODULE: ui.lua                      ║
     ║  Главный UI builder                  ║
     ║                                      ║
+    ║  ОБНОВЛЕНИЕ:                         ║
+    ║  • Секция HOTKEYS в StatusPage       ║
+    ║  • Визуальные бейджи клавиш          ║
+    ║                                      ║
     ║  Зависимости: ВСЕ предыдущие         ║
-    ║  config, state, utils, notify,       ║
-    ║  components, engine                  ║
-    ║                                      ║
-    ║  RAW ссылка → loader.lua →           ║
-    ║  loadModule("ui")                    ║
-    ║                                      ║
-    ║  Возвращает таблицу с методами:      ║
-    ║  UI.Create()  — построить окно       ║
-    ║  UI.Destroy() — удалить окно         ║
     ╚══════════════════════════════════════╝
 ]]
 
@@ -20,12 +15,24 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local TCP = shared.TCP
+if not TCP or not TCP.Modules then
+    warn("❌ [ui] shared.TCP not found!")
+    return nil
+end
+
 local Config    = TCP.Modules.Config
 local State     = TCP.Modules.State
 local Utils     = TCP.Modules.Utils
 local Notify    = TCP.Modules.Notify
 local Comp      = TCP.Modules.Components
 local Engine    = TCP.Modules.Engine
+
+if not Config then warn("❌ [ui] Missing: Config"); return nil end
+if not State  then warn("❌ [ui] Missing: State");  return nil end
+if not Utils  then warn("❌ [ui] Missing: Utils");  return nil end
+if not Notify then warn("❌ [ui] Missing: Notify"); return nil end
+if not Comp   then warn("❌ [ui] Missing: Components"); return nil end
+if not Engine then warn("❌ [ui] Missing: Engine"); return nil end
 
 local C = Config.Colors
 local UI = {}
@@ -40,12 +47,12 @@ end
 function UI.Create()
     UI.Destroy()
 
-    -- ScreenGui
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "TCP_VapeStyle"
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.DisplayOrder = 999
+    screenGui.IgnoreGuiInset = true
 
     local ok = pcall(function() screenGui.Parent = CoreGui end)
     if not ok then screenGui.Parent = State.Player.PlayerGui end
@@ -56,8 +63,8 @@ function UI.Create()
     -- ===== MAIN FRAME =====
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 440, 0, 560)
-    mainFrame.Position = UDim2.new(0.5, -220, 0.5, -280)
+    mainFrame.Size = UDim2.new(0, 440, 0, 600)
+    mainFrame.Position = UDim2.new(0.5, -220, 0.5, -300)
     mainFrame.BackgroundColor3 = C.Background
     mainFrame.BorderSizePixel = 0
     mainFrame.Active = true
@@ -68,12 +75,11 @@ function UI.Create()
     Utils.CreateStroke(mainFrame, Color3.fromRGB(45, 45, 55), 1, 0.3)
     Utils.CreateShadow(mainFrame)
 
-    -- Intro animation
     mainFrame.BackgroundTransparency = 1
     mainFrame.Size = UDim2.new(0, 440, 0, 0)
     Utils.Tween(mainFrame, {
         BackgroundTransparency = 0,
-        Size = UDim2.new(0, 440, 0, 560)
+        Size = UDim2.new(0, 440, 0, 600)
     }, 0.4, Enum.EasingStyle.Back)
 
     -- ===== HEADER =====
@@ -85,7 +91,6 @@ function UI.Create()
     header.Parent = mainFrame
     Utils.CreateCorner(header, 12)
 
-    -- Accent line
     local headerAccent = Instance.new("Frame")
     headerAccent.Size = UDim2.new(1, -20, 0, 2)
     headerAccent.Position = UDim2.new(0, 10, 1, -1)
@@ -94,7 +99,6 @@ function UI.Create()
     Utils.CreateCorner(headerAccent, 1)
     Utils.CreateGradient(headerAccent, C.Accent, C.AccentGlow, 0)
 
-    -- Logo
     local logo = Instance.new("TextLabel")
     logo.Size = UDim2.new(0, 30, 0, 30)
     logo.Position = UDim2.new(0, 14, 0.5, -15)
@@ -143,7 +147,9 @@ function UI.Create()
     pageContainer.ClipsDescendants = true
     pageContainer.Parent = mainFrame
 
-    -- ===== STATUS PAGE =====
+    -- ═══════════════════════════════════
+    --          STATUS PAGE
+    -- ═══════════════════════════════════
     local statusPage = Instance.new("ScrollingFrame")
     statusPage.Name = "StatusPage"
     statusPage.Size = UDim2.new(1, 0, 1, 0)
@@ -219,7 +225,41 @@ function UI.Create()
         Config.PartName == "" and "ALL" or Config.PartName, C.TextSecondary, 11)
     State.UIElements.KeyHint = Comp.CreateInfoRow(statusPage, "⌨️", "Key K", "Start Loop", C.Success, 12)
 
-    -- ===== SETTINGS PAGE =====
+    -- ═══════════════════════════════════
+    --     HOTKEYS SECTION (НОВОЕ!)
+    -- ═══════════════════════════════════
+    Comp.CreateSection(statusPage, "HOTKEYS", 13)
+
+    Comp.CreateHotkeyRow(statusPage, "K", "Start / Stop loop · Single pull", 14)
+    Comp.CreateHotkeyRow(statusPage, "P", "Hide / Show this panel", 15)
+    Comp.CreateHotkeyRow(statusPage, "L", "Release all grabbed parts", 16)
+    Comp.CreateHotkeyRow(statusPage, "J", "Quick pause / activate", 17)
+
+    -- Подсказка про жёлтый инпут
+    local inputHintFrame = Instance.new("Frame")
+    inputHintFrame.Size = UDim2.new(1, 0, 0, 36)
+    inputHintFrame.BackgroundColor3 = C.Surface
+    inputHintFrame.BackgroundTransparency = 0.5
+    inputHintFrame.LayoutOrder = 18
+    inputHintFrame.Parent = statusPage
+    Utils.CreateCorner(inputHintFrame, 8)
+
+    local inputHint = Instance.new("TextLabel")
+    inputHint.Size = UDim2.new(1, -16, 1, 0)
+    inputHint.Position = UDim2.new(0, 8, 0, 0)
+    inputHint.BackgroundTransparency = 1
+    inputHint.RichText = true
+    inputHint.Text = '💡 <font color="#FFE632">Yellow text</font> = not confirmed. Press <font color="#5A50DC">Enter ↵</font> to apply.'
+    inputHint.TextColor3 = C.TextSecondary
+    inputHint.Font = Enum.Font.GothamMedium
+    inputHint.TextSize = 11
+    inputHint.TextXAlignment = Enum.TextXAlignment.Left
+    inputHint.TextWrapped = true
+    inputHint.Parent = inputHintFrame
+
+    -- ═══════════════════════════════════
+    --         SETTINGS PAGE
+    -- ═══════════════════════════════════
     local settingsPage = Instance.new("ScrollingFrame")
     settingsPage.Name = "SettingsPage"
     settingsPage.Size = UDim2.new(1, 0, 1, 0)
@@ -233,7 +273,7 @@ function UI.Create()
     Utils.CreateListLayout(settingsPage, nil, 8)
     Utils.CreatePadding(settingsPage, 0, 60, 0, 0)
 
-    -- Source Section
+    -- Source
     Comp.CreateSection(settingsPage, "SOURCE", 1)
 
     Comp.CreateInput(settingsPage, "📂 Folder Path", "e.g. ItemDebris (empty = Workspace)",
@@ -254,7 +294,7 @@ function UI.Create()
             if n and n > 0 then Config.MaxParts = math.floor(n) end
         end, 4)
 
-    -- Target Section
+    -- Target
     Comp.CreateSection(settingsPage, "TARGET", 5)
 
     local customTargetGroup = Instance.new("Frame")
@@ -318,7 +358,7 @@ function UI.Create()
     Comp.CreateToggle(settingsPage, "⚓ Anchor on Release", Config.AnchorOnFinish,
         function(val) Config.AnchorOnFinish = val end, 12)
 
-    -- Smooth Teleport
+    -- Smooth
     Comp.CreateSection(settingsPage, "SMOOTH TELEPORT", 13)
 
     Comp.CreateToggle(settingsPage, "💫 Smooth Teleport", Config.SmoothTeleport,
@@ -378,7 +418,6 @@ function UI.Create()
     footer.BackgroundTransparency = 1
     footer.Parent = mainFrame
 
-    -- Main Toggle
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Size = UDim2.new(1, 0, 0, 42)
     toggleBtn.BackgroundColor3 = C.Warning
@@ -394,7 +433,6 @@ function UI.Create()
     toggleBtn.MouseButton1Click:Connect(function()
         Utils.AnimateClick(toggleBtn)
         Utils.Ripple(toggleBtn, State.Mouse.X, State.Mouse.Y)
-
         State.IsActive = not State.IsActive
         if State.IsActive then
             toggleBtn.Text = "⏸️  DEACTIVATE"
@@ -408,7 +446,6 @@ function UI.Create()
         end
     end)
 
-    -- Sub buttons
     local subRow = Instance.new("Frame")
     subRow.Size = UDim2.new(1, 0, 0, 38)
     subRow.Position = UDim2.new(0, 0, 0, 50)
@@ -446,7 +483,7 @@ function UI.Create()
     createFooterBtn("🔓 Release", Color3.fromRGB(160, 110, 30), 0.34, function()
         local count = #State.PartsToTeleport
         Engine.ReleaseAll()
-        Notify.Send("Released " .. count .. " parts", C.Warning)
+        Notify.Send("🔓 Released " .. count .. " parts", C.Warning)
     end)
 
     createFooterBtn("✕ Close", C.Danger, 0.34, function()
@@ -454,7 +491,8 @@ function UI.Create()
         State.IsActive = false
         Engine.ReleaseAll()
         if State.SelectionBox then State.SelectionBox:Destroy() end
-
+        -- Очистить shared для перезапуска
+        shared.TCP.Loaded = false
         Utils.Tween(mainFrame, {
             BackgroundTransparency = 1,
             Size = UDim2.new(0, 440, 0, 0)
