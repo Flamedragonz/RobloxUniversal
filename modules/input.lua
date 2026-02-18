@@ -3,28 +3,35 @@
     ║  MODULE: input.lua                   ║
     ║  Обработка клавиш и мыши             ║
     ║                                      ║
+    ║  ОБНОВЛЕНИЕ:                         ║
+    ║  • Уведомление с количеством при     ║
+    ║    single pull (K в Single Mode)     ║
+    ║  • Улучшенные тексты нотификаций     ║
+    ║                                      ║
     ║  Зависимости: config, state, engine, ║
-    ║               notify, utils, ui      ║
-    ║                                      ║
-    ║  RAW ссылка → loader.lua →           ║
-    ║  loadModule("input")                 ║
-    ║                                      ║
-    ║  Hotkeys:                            ║
-    ║  K — Toggle loop / Pull once         ║
-    ║  P — Hide/Show UI                    ║
-    ║  L — Release all parts               ║
-    ║  J — Quick Active toggle             ║
+    ║               notify, utils          ║
     ╚══════════════════════════════════════╝
 ]]
 
 local UserInputService = game:GetService("UserInputService")
 
 local TCP = shared.TCP
+if not TCP or not TCP.Modules then
+    warn("❌ [input] shared.TCP not found!")
+    return nil
+end
+
 local Config = TCP.Modules.Config
-local State = TCP.Modules.State
+local State  = TCP.Modules.State
 local Engine = TCP.Modules.Engine
 local Notify = TCP.Modules.Notify
-local Utils = TCP.Modules.Utils
+local Utils  = TCP.Modules.Utils
+
+if not Config then warn("❌ [input] Missing: Config"); return nil end
+if not State  then warn("❌ [input] Missing: State");  return nil end
+if not Engine then warn("❌ [input] Missing: Engine"); return nil end
+if not Notify then warn("❌ [input] Missing: Notify"); return nil end
+if not Utils  then warn("❌ [input] Missing: Utils");  return nil end
 
 local C = Config.Colors
 local Keys = Config.Hotkeys
@@ -37,17 +44,36 @@ function Input.Setup()
 
         -- K — Toggle loop / Pull once
         if input.KeyCode == Keys.Toggle then
-            if not State.IsActive then return end
+            if not State.IsActive then
+                Notify.Send("⚠️ Script is paused. Press J to activate", C.Warning)
+                return
+            end
 
             if Config.LoopMode then
                 State.LoopActive = not State.LoopActive
-                Notify.Send(
-                    State.LoopActive and "🔄 Loop started" or "⏹️ Loop stopped",
-                    State.LoopActive and C.Success or C.Warning
-                )
+                if State.LoopActive then
+                    Notify.Send("🔄 Loop started — collecting every " .. Config.LoopInterval .. "s", C.Success)
+                else
+                    Notify.Send("⏹️ Loop stopped — " .. #State.PartsToTeleport .. " parts active", C.Warning)
+                end
             else
+                -- Single pull с уведомлением о количестве
+                local before = #State.PartsToTeleport
                 local added = Engine.CollectParts()
-                Notify.Send("Pulled " .. added .. " parts", C.Info)
+                local after = #State.PartsToTeleport
+
+                if added > 0 then
+                    Notify.Send(
+                        "📦 Pulled " .. added .. " parts (active: " .. after .. "/" .. Config.MaxParts .. ")",
+                        C.Info
+                    )
+                else
+                    if after >= Config.MaxParts then
+                        Notify.Send("⚠️ Max parts limit reached (" .. Config.MaxParts .. ")", C.Warning)
+                    else
+                        Notify.Send("🔍 No new parts found in folder", C.TextSecondary)
+                    end
+                end
             end
         end
 
@@ -60,12 +86,6 @@ function Input.Setup()
                     if State.UIVisible then
                         mf.Visible = true
                         Utils.Tween(mf, {BackgroundTransparency = 0}, 0.2)
-                        -- Восстановить дочерние элементы
-                        for _, child in pairs(mf:GetDescendants()) do
-                            if child:IsA("GuiObject") and child.Name ~= "Shadow" then
-                                -- Visibility уже управляется parent
-                            end
-                        end
                     else
                         Utils.Tween(mf, {BackgroundTransparency = 1}, 0.2)
                         task.delay(0.2, function()
@@ -77,7 +97,7 @@ function Input.Setup()
                 end
             end
             Notify.Send(
-                State.UIVisible and "👁️ UI Shown" or "🙈 UI Hidden (P to show)",
+                State.UIVisible and "👁️ UI Shown (P to hide)" or "🙈 UI Hidden (P to show)",
                 C.Info
             )
         end
@@ -85,8 +105,13 @@ function Input.Setup()
         -- L — Release all
         if input.KeyCode == Keys.Release then
             local count = #State.PartsToTeleport
-            Engine.ReleaseAll()
-            Notify.Send("Released " .. count .. " parts", C.Warning)
+            if count > 0 then
+                Engine.ReleaseAll()
+                local anchorText = Config.AnchorOnFinish and " (anchored)" or ""
+                Notify.Send("🔓 Released " .. count .. " parts" .. anchorText, C.Warning)
+            else
+                Notify.Send("🔓 No parts to release", C.TextSecondary)
+            end
         end
 
         -- J — Quick toggle
@@ -96,7 +121,9 @@ function Input.Setup()
                 State.LoopActive = false
             end
             Notify.Send(
-                State.IsActive and "▶️ Activated" or "⏸️ Paused",
+                State.IsActive
+                    and "▶️ Activated — press K to start"
+                    or "⏸️ Paused — " .. #State.PartsToTeleport .. " parts held",
                 State.IsActive and C.Success or C.Warning
             )
         end
@@ -116,7 +143,6 @@ function Input.Setup()
         Engine.UpdateSelectionBox(target)
         State.IsSelectingTarget = false
 
-        -- Обновить UI элементы
         if State.UIElements.SelectBtn then
             State.UIElements.SelectBtn.Text = "👆 Click to Select Target"
             Utils.Tween(State.UIElements.SelectBtn, {
@@ -125,10 +151,10 @@ function Input.Setup()
         end
 
         if State.UIElements.CustomTargetInput then
-            State.UIElements.CustomTargetInput.Input.Text = target.Name
+            State.UIElements.CustomTargetInput.SetText(target.Name)
         end
 
-        Notify.Send("🎯 Target: " .. target.Name, C.Success)
+        Notify.Send("🎯 Target set: " .. target.Name, C.Success)
     end)
 end
 
