@@ -12,8 +12,8 @@ local Players     = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
 -- !! ВСТАВЬ СВОИ ДАННЫЕ !!
-local API_KEY       = "YOUR_API_KEY_HERE"
-local BIN_ID        = "YOUR_BIN_ID_HERE"
+local API_KEY       = "$2a$10$MCM7FTbZMBt2ei7K2jwHI.vGnwQ0M3.l9u6.QEcjL5zuFPViZvA.2"
+local BIN_ID        = "6995cf2c43b1c97be988c014"
 local SYNC_URL      = "https://api.jsonbin.io/v3/b/" .. BIN_ID
 local POLL_INTERVAL = 4
 
