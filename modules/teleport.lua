@@ -3,21 +3,42 @@
     ║  MODULE: teleport.lua                ║
     ║  Heartbeat цикл телепортации         ║
     ║                                      ║
-    ║  Зависимости: config, state, engine  ║
+    ║  ОБНОВЛЕНИЕ:                         ║
+    ║  • Всплывающее уведомление при       ║
+    ║    сборе новых партов                ║
+    ║  • Уведомление при исчезновении      ║
+    ║    партов (collected by game)        ║
     ║                                      ║
-    ║  RAW ссылка → loader.lua →           ║
-    ║  loadModule("teleport")              ║
+    ║  Зависимости: config, state, engine, ║
+    ║               notify                 ║
     ╚══════════════════════════════════════╝
 ]]
 
 local RunService = game:GetService("RunService")
 
 local TCP = shared.TCP
-local Config = TCP.Modules.Config
-local State = TCP.Modules.State
-local Engine = TCP.Modules.Engine
+if not TCP or not TCP.Modules then
+    warn("❌ [teleport] shared.TCP not found!")
+    return nil
+end
 
+local Config = TCP.Modules.Config
+local State  = TCP.Modules.State
+local Engine = TCP.Modules.Engine
+local Notify = TCP.Modules.Notify
+
+if not Config then warn("❌ [teleport] Missing: Config"); return nil end
+if not State  then warn("❌ [teleport] Missing: State");  return nil end
+if not Engine then warn("❌ [teleport] Missing: Engine"); return nil end
+if not Notify then warn("❌ [teleport] Missing: Notify"); return nil end
+
+local C = Config.Colors
 local Teleport = {}
+
+-- Трекер исчезнувших партов для батч-уведомлений
+local disappearedCount = 0
+local lastDisappearedNotify = 0
+local DISAPPEAR_NOTIFY_INTERVAL = 3 -- Не чаще чем раз в 3 секунды
 
 -- Главный цикл: перемещает парты каждый кадр
 function Teleport.StartHeartbeat()
@@ -34,6 +55,7 @@ function Teleport.StartHeartbeat()
                 if not part or not part.Parent then
                     table.remove(State.PartsToTeleport, i)
                     State.Stats.CollectedParts = State.Stats.CollectedParts + 1
+                    disappearedCount = disappearedCount + 1
                 else
                     pcall(function()
                         local destPos
@@ -75,6 +97,17 @@ function Teleport.StartHeartbeat()
                     end)
                 end
             end
+
+            -- Батч-уведомление об исчезнувших партах
+            if disappearedCount > 0 and (tick() - lastDisappearedNotify) > DISAPPEAR_NOTIFY_INTERVAL then
+                Notify.Send(
+                    "📦 +" .. disappearedCount .. " collected (total: " .. State.Stats.CollectedParts .. ")",
+                    C.Success,
+                    2.5
+                )
+                disappearedCount = 0
+                lastDisappearedNotify = tick()
+            end
         end)
     end)
 end
@@ -84,7 +117,16 @@ function Teleport.StartCollectionLoop()
     task.spawn(function()
         while State.IsRunning do
             if State.IsActive and Config.LoopMode and State.LoopActive then
-                Engine.CollectParts()
+                local added = Engine.CollectParts()
+
+                -- Уведомление о новых собранных партах
+                if added > 0 then
+                    Notify.Send(
+                        "🔄 Grabbed " .. added .. " parts (active: " .. #State.PartsToTeleport .. "/" .. Config.MaxParts .. ")",
+                        C.Info,
+                        2
+                    )
+                end
             end
             task.wait(Config.LoopInterval)
         end
