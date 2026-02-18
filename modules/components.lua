@@ -3,24 +3,40 @@
     ║  MODULE: components.lua              ║
     ║  UI компоненты: toggle, input, etc.  ║
     ║                                      ║
-    ║  Зависимости: utils, config          ║
+    ║  ОБНОВЛЕНИЕ:                         ║
+    ║  • Input: жёлтый текст если не       ║
+    ║    подтверждён Enter-ом              ║
+    ║  • Визуальный индикатор "pending"    ║
     ║                                      ║
-    ║  RAW ссылка → loader.lua →           ║
-    ║  loadModule("components")            ║
-    ║                                      ║
-    ║  Каждая функция возвращает таблицу   ║
-    ║  с методами SetValue, GetValue и     ║
-    ║  ссылками на Frame/Input             ║
+    ║  Зависимости: utils, config, state   ║
     ╚══════════════════════════════════════╝
 ]]
 
 local TCP = shared.TCP
-local Config = TCP.Modules.Config
-local State = TCP.Modules.State
-local Utils = TCP.Modules.Utils
+if not TCP or not TCP.Modules then
+    warn("❌ [components] shared.TCP not found!")
+    return nil
+end
 
-local C = Config.Colors -- shorthand
+local Config = TCP.Modules.Config
+local State  = TCP.Modules.State
+local Utils  = TCP.Modules.Utils
+
+if not Config then warn("❌ [components] Missing: Config"); return nil end
+if not State  then warn("❌ [components] Missing: State");  return nil end
+if not Utils  then warn("❌ [components] Missing: Utils");  return nil end
+
+local C = Config.Colors
 local Components = {}
+
+-- ========== ЦВЕТА ДЛЯ ИНПУТОВ ==========
+local INPUT_COLORS = {
+    Confirmed   = C.TextPrimary,                    -- Белый — подтверждено
+    Pending     = Color3.fromRGB(255, 230, 50),     -- Жёлтый — не подтверждено
+    StrokeIdle  = Color3.fromRGB(50, 50, 60),       -- Обычная обводка
+    StrokeFocus = C.Accent,                          -- Фокус
+    StrokePending = Color3.fromRGB(200, 180, 40),   -- Жёлтая обводка когда pending
+}
 
 -- ========== SECTION DIVIDER ==========
 function Components.CreateSection(parent, title, order)
@@ -65,7 +81,6 @@ function Components.CreateToggle(parent, name, default, callback, order)
     frame.Parent = parent
     Utils.CreateCorner(frame, 8)
 
-    -- Название
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, -65, 1, 0)
     label.Position = UDim2.new(0, 14, 0, 0)
@@ -77,7 +92,6 @@ function Components.CreateToggle(parent, name, default, callback, order)
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = frame
 
-    -- Фон переключателя
     local toggleBg = Instance.new("Frame")
     toggleBg.Size = UDim2.new(0, 44, 0, 22)
     toggleBg.Position = UDim2.new(1, -54, 0.5, -11)
@@ -86,7 +100,6 @@ function Components.CreateToggle(parent, name, default, callback, order)
     toggleBg.Parent = frame
     Utils.CreateCorner(toggleBg, 11)
 
-    -- Кнобка
     local knob = Instance.new("Frame")
     knob.Size = UDim2.new(0, 18, 0, 18)
     knob.Position = value
@@ -97,7 +110,6 @@ function Components.CreateToggle(parent, name, default, callback, order)
     knob.Parent = toggleBg
     Utils.CreateCorner(knob, 9)
 
-    -- Кликабельная область
     local clickArea = Instance.new("TextButton")
     clickArea.Size = UDim2.new(1, 0, 1, 0)
     clickArea.BackgroundTransparency = 1
@@ -136,8 +148,10 @@ function Components.CreateToggle(parent, name, default, callback, order)
     }
 end
 
--- ========== TEXT INPUT ==========
+-- ========== TEXT INPUT (с жёлтой подсветкой) ==========
 function Components.CreateInput(parent, name, placeholder, default, callback, order)
+    local confirmedValue = tostring(default or "")
+
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, 0, 0, 58)
     frame.BackgroundTransparency = 1
@@ -163,39 +177,146 @@ function Components.CreateInput(parent, name, placeholder, default, callback, or
     inputBg.BorderSizePixel = 0
     inputBg.Parent = frame
     Utils.CreateCorner(inputBg, 8)
-    local stroke = Utils.CreateStroke(inputBg, Color3.fromRGB(50, 50, 60), 1, 0.5)
+    local stroke = Utils.CreateStroke(inputBg, INPUT_COLORS.StrokeIdle, 1, 0.5)
+
+    -- Иконка статуса (точка справа)
+    local statusDot = Instance.new("Frame")
+    statusDot.Size = UDim2.new(0, 8, 0, 8)
+    statusDot.Position = UDim2.new(1, -14, 0.5, -4)
+    statusDot.BackgroundColor3 = C.Success
+    statusDot.BackgroundTransparency = 1 -- Скрыта по умолчанию
+    statusDot.BorderSizePixel = 0
+    statusDot.ZIndex = 3
+    statusDot.Parent = inputBg
+    Utils.CreateCorner(statusDot, 4)
+
+    -- Подсказка "Enter ↵" справа
+    local enterHint = Instance.new("TextLabel")
+    enterHint.Size = UDim2.new(0, 45, 1, 0)
+    enterHint.Position = UDim2.new(1, -50, 0, 0)
+    enterHint.BackgroundTransparency = 1
+    enterHint.Text = ""
+    enterHint.TextColor3 = INPUT_COLORS.Pending
+    enterHint.Font = Enum.Font.GothamMedium
+    enterHint.TextSize = 10
+    enterHint.TextXAlignment = Enum.TextXAlignment.Right
+    enterHint.TextTransparency = 1
+    enterHint.ZIndex = 3
+    enterHint.Parent = inputBg
 
     -- TextBox
     local input = Instance.new("TextBox")
-    input.Size = UDim2.new(1, -16, 1, 0)
+    input.Size = UDim2.new(1, -20, 1, 0)
     input.Position = UDim2.new(0, 8, 0, 0)
     input.BackgroundTransparency = 1
-    input.Text = tostring(default or "")
+    input.Text = confirmedValue
     input.PlaceholderText = placeholder or ""
     input.PlaceholderColor3 = Color3.fromRGB(80, 80, 90)
-    input.TextColor3 = C.TextPrimary
+    input.TextColor3 = INPUT_COLORS.Confirmed
     input.Font = Enum.Font.GothamMedium
     input.TextSize = 14
     input.TextXAlignment = Enum.TextXAlignment.Left
     input.ClearTextOnFocus = false
     input.Parent = inputBg
 
+    -- ===== ОТСЛЕЖИВАНИЕ ИЗМЕНЕНИЙ =====
+    local isPending = false
+
+    local function updatePendingVisuals(pending)
+        isPending = pending
+        if pending then
+            -- Жёлтый текст + подсказка Enter
+            Utils.Tween(input, {TextColor3 = INPUT_COLORS.Pending}, 0.15)
+            enterHint.Text = "Enter ↵"
+            Utils.Tween(enterHint, {TextTransparency = 0}, 0.15)
+            Utils.Tween(statusDot, {
+                BackgroundColor3 = INPUT_COLORS.Pending,
+                BackgroundTransparency = 0
+            }, 0.15)
+            -- Жёлтая обводка
+            if not input:IsFocused() then
+                Utils.Tween(stroke, {
+                    Color = INPUT_COLORS.StrokePending,
+                    Transparency = 0.3
+                }, 0.15)
+            end
+        else
+            -- Белый текст + скрыть подсказку
+            Utils.Tween(input, {TextColor3 = INPUT_COLORS.Confirmed}, 0.15)
+            Utils.Tween(enterHint, {TextTransparency = 1}, 0.15)
+            -- Зелёная точка "подтверждено" (мигнёт и исчезнет)
+            Utils.Tween(statusDot, {
+                BackgroundColor3 = C.Success,
+                BackgroundTransparency = 0
+            }, 0.15)
+            task.delay(1, function()
+                if not isPending and statusDot and statusDot.Parent then
+                    Utils.Tween(statusDot, {BackgroundTransparency = 1}, 0.3)
+                end
+            end)
+            -- Обычная обводка
+            if not input:IsFocused() then
+                Utils.Tween(stroke, {
+                    Color = INPUT_COLORS.StrokeIdle,
+                    Transparency = 0.5
+                }, 0.15)
+            end
+        end
+    end
+
+    -- Отслеживать каждое изменение текста
+    input:GetPropertyChangedSignal("Text"):Connect(function()
+        if input.Text ~= confirmedValue then
+            updatePendingVisuals(true)
+        else
+            updatePendingVisuals(false)
+        end
+    end)
+
     -- Анимация фокуса
     input.Focused:Connect(function()
-        Utils.Tween(stroke, {Color = C.Accent, Transparency = 0}, 0.2)
+        Utils.Tween(stroke, {
+            Color = isPending and INPUT_COLORS.Pending or C.Accent,
+            Transparency = 0
+        }, 0.2)
     end)
+
+    -- При потере фокуса
     input.FocusLost:Connect(function(enterPressed)
-        Utils.Tween(stroke, {Color = Color3.fromRGB(50, 50, 60), Transparency = 0.5}, 0.2)
-        if enterPressed and callback then
-            callback(input.Text, input)
+        if enterPressed then
+            -- ✅ Подтверждено Enter-ом
+            confirmedValue = input.Text
+            updatePendingVisuals(false)
+            Utils.Tween(stroke, {
+                Color = INPUT_COLORS.StrokeIdle,
+                Transparency = 0.5
+            }, 0.2)
+            if callback then
+                callback(input.Text, input)
+            end
+        else
+            -- ❌ Не подтверждено — оставить жёлтым если изменено
+            if input.Text ~= confirmedValue then
+                updatePendingVisuals(true)
+            end
+            Utils.Tween(stroke, {
+                Color = isPending and INPUT_COLORS.StrokePending or INPUT_COLORS.StrokeIdle,
+                Transparency = isPending and 0.3 or 0.5
+            }, 0.2)
         end
     end)
 
     return {
         Frame = frame,
         Input = input,
-        SetText = function(t) input.Text = tostring(t) end,
+        SetText = function(t)
+            confirmedValue = tostring(t)
+            input.Text = confirmedValue
+            updatePendingVisuals(false)
+        end,
         GetText = function() return input.Text end,
+        GetConfirmed = function() return confirmedValue end,
+        IsPending = function() return isPending end,
     }
 end
 
@@ -255,10 +376,52 @@ function Components.CreateInfoRow(parent, icon, label, value, color, order)
     val.TextXAlignment = Enum.TextXAlignment.Right
     val.Parent = frame
 
-    return val -- Возвращает TextLabel значения для обновления
+    return val
 end
 
--- ========== OFFSET INPUTS (X, Y, Z) ==========
+-- ========== HOTKEY ROW (новый компонент) ==========
+function Components.CreateHotkeyRow(parent, key, description, order)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 30)
+    frame.BackgroundTransparency = 1
+    frame.LayoutOrder = order or 0
+    frame.Parent = parent
+
+    -- Бейдж клавиши
+    local keyBadge = Instance.new("Frame")
+    keyBadge.Size = UDim2.new(0, 32, 0, 24)
+    keyBadge.Position = UDim2.new(0, 0, 0.5, -12)
+    keyBadge.BackgroundColor3 = C.SurfaceLight
+    keyBadge.BorderSizePixel = 0
+    keyBadge.Parent = frame
+    Utils.CreateCorner(keyBadge, 6)
+    Utils.CreateStroke(keyBadge, C.Accent, 1, 0.5)
+
+    local keyLabel = Instance.new("TextLabel")
+    keyLabel.Size = UDim2.new(1, 0, 1, 0)
+    keyLabel.BackgroundTransparency = 1
+    keyLabel.Text = key
+    keyLabel.TextColor3 = C.Accent
+    keyLabel.Font = Enum.Font.GothamBlack
+    keyLabel.TextSize = 13
+    keyLabel.Parent = keyBadge
+
+    -- Описание
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(1, -44, 1, 0)
+    descLabel.Position = UDim2.new(0, 42, 0, 0)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = description
+    descLabel.TextColor3 = C.TextSecondary
+    descLabel.Font = Enum.Font.GothamMedium
+    descLabel.TextSize = 13
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Parent = frame
+
+    return frame
+end
+
+-- ========== OFFSET INPUTS (X, Y, Z) с жёлтой подсветкой ==========
 function Components.CreateOffsetInputs(parent, offset, callback, order)
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, 0, 0, 58)
@@ -277,10 +440,13 @@ function Components.CreateOffsetInputs(parent, offset, callback, order)
     label.Parent = frame
 
     local inputs = {}
+    local confirmedValues = {}
     local labels = {"X", "Y", "Z"}
     local defaults = {offset.X, offset.Y, offset.Z}
 
     for i = 1, 3 do
+        confirmedValues[i] = tostring(defaults[i])
+
         local bg = Instance.new("Frame")
         bg.Size = UDim2.new(0.31, 0, 0, 34)
         bg.Position = UDim2.new((i - 1) * 0.345, 0, 0, 22)
@@ -288,7 +454,7 @@ function Components.CreateOffsetInputs(parent, offset, callback, order)
         bg.BorderSizePixel = 0
         bg.Parent = frame
         Utils.CreateCorner(bg, 8)
-        Utils.CreateStroke(bg, Color3.fromRGB(50, 50, 60), 1, 0.5)
+        local stroke = Utils.CreateStroke(bg, INPUT_COLORS.StrokeIdle, 1, 0.5)
 
         local axisLabel = Instance.new("TextLabel")
         axisLabel.Size = UDim2.new(0, 20, 1, 0)
@@ -304,15 +470,42 @@ function Components.CreateOffsetInputs(parent, offset, callback, order)
         inp.Size = UDim2.new(1, -28, 1, 0)
         inp.Position = UDim2.new(0, 24, 0, 0)
         inp.BackgroundTransparency = 1
-        inp.Text = tostring(defaults[i])
-        inp.TextColor3 = C.TextPrimary
+        inp.Text = confirmedValues[i]
+        inp.TextColor3 = INPUT_COLORS.Confirmed
         inp.Font = Enum.Font.GothamMedium
         inp.TextSize = 14
         inp.ClearTextOnFocus = false
         inp.Parent = bg
 
-        inp.FocusLost:Connect(function()
-            if callback then callback() end
+        -- Жёлтая подсветка для offset инпутов
+        local idx = i
+        inp:GetPropertyChangedSignal("Text"):Connect(function()
+            if inp.Text ~= confirmedValues[idx] then
+                Utils.Tween(inp, {TextColor3 = INPUT_COLORS.Pending}, 0.15)
+                Utils.Tween(stroke, {Color = INPUT_COLORS.StrokePending, Transparency = 0.3}, 0.15)
+            else
+                Utils.Tween(inp, {TextColor3 = INPUT_COLORS.Confirmed}, 0.15)
+                Utils.Tween(stroke, {Color = INPUT_COLORS.StrokeIdle, Transparency = 0.5}, 0.15)
+            end
+        end)
+
+        inp.Focused:Connect(function()
+            Utils.Tween(stroke, {Color = C.Accent, Transparency = 0}, 0.2)
+        end)
+
+        inp.FocusLost:Connect(function(enterPressed)
+            if enterPressed then
+                confirmedValues[idx] = inp.Text
+                Utils.Tween(inp, {TextColor3 = INPUT_COLORS.Confirmed}, 0.15)
+                Utils.Tween(stroke, {Color = INPUT_COLORS.StrokeIdle, Transparency = 0.5}, 0.2)
+                if callback then callback() end
+            else
+                if inp.Text ~= confirmedValues[idx] then
+                    Utils.Tween(stroke, {Color = INPUT_COLORS.StrokePending, Transparency = 0.3}, 0.2)
+                else
+                    Utils.Tween(stroke, {Color = INPUT_COLORS.StrokeIdle, Transparency = 0.5}, 0.2)
+                end
+            end
         end)
 
         inputs[i] = inp
