@@ -1,249 +1,191 @@
 -- ============================================================
--- GRAVE BUILDER + SYNC
--- Совместим с: Synapse X, Solara, Velocity, KRNL, Fluxus
+-- GRAVE BUILDER + SYNC via jsonbin.io
+-- Synapse X / Solara / Velocity / KRNL совместимый
 -- ============================================================
 
+-- Сначала все сервисы
 local Players     = game:GetService("Players")
 local RunService  = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ============================================================
--- НАСТРОЙКИ
+-- НАСТРОЙКИ — ВСТАВЬ СЮДА
 -- ============================================================
 local API_KEY       = "$2a$10$MCM7FTbZMBt2ei7K2jwHI.vGnwQ0M3.l9u6.QEcjL5zuFPViZvA.2"
-local BIN_ID        = "6995cf2c43b1c97be988c014"
+local BIN_ID        = "6995cf2c43b1c97be988c014"  -- ТОЛЬКО цифробуквенный ID
 local SYNC_URL      = "https://api.jsonbin.io/v3/b/" .. BIN_ID
-local POLL_INTERVAL = 12  -- секунд между проверками (429 = слишком часто)
+local POLL_INTERVAL = 5
 
 -- ============================================================
--- ПОИСК HTTP ФУНКЦИИ — все известные исполнители
+-- ОПРЕДЕЛЯЕМ HTTP ФУНКЦИЮ (все исполнители)
 -- ============================================================
 local httpRequest = nil
 
-local function tryGet(fn)
-    local ok, v = pcall(fn)
-    return (ok and type(v) == "function") and v or nil
-end
-
--- Полный список вариантов
-local candidates = {
-    function() return syn.request          end,  -- Synapse X
-    function() return request              end,  -- Solara, KRNL, Delta, Fluxus
-    function() return http.request         end,  -- KRNL старый
-    function() return http_request         end,  -- некоторые форки
-    function() return fluxus.request       end,  -- Fluxus
-    function() return getgenv().request    end,
-    function() return getgenv().syn.request end,
-    function() return getgenv().http_request end,
-    function() return getgenv().http.request end,
-}
-
-for _, fn in ipairs(candidates) do
-    local v = tryGet(fn)
-    if v then
-        httpRequest = v
-        print("[GraveSync] HTTP найден: " .. tostring(v))
-        break
-    end
-end
-
--- Velocity специфично — пробуем через pcall с вызовом
+-- Synapse X
 if not httpRequest then
-    local ok, _ = pcall(function()
-        local r = request({Url="https://httpbin.org/get", Method="GET"})
-        if r and (r.StatusCode or r.status) then
-            httpRequest = request
-        end
-    end)
+    local ok, fn = pcall(function() return syn.request end)
+    if ok and fn then httpRequest = fn end
+end
+
+-- Solara / Delta / новые форки Synapse
+if not httpRequest then
+    local ok, fn = pcall(function() return request end)
+    if ok and fn then httpRequest = fn end
+end
+
+-- KRNL
+if not httpRequest then
+    local ok, fn = pcall(function() return http.request end)
+    if ok and fn then httpRequest = fn end
+end
+
+-- Velocity (использует fluxus-style)
+if not httpRequest then
+    local ok, fn = pcall(function() return fluxus.request end)
+    if ok and fn then httpRequest = fn end
+end
+
+-- getgenv fallback
+if not httpRequest then
+    local ok, env = pcall(getgenv)
+    if ok and env then
+        httpRequest = env.syn and env.syn.request
+            or env.request
+            or env.http_request
+            or env.http and env.http.request
+    end
 end
 
 local syncEnabled = httpRequest ~= nil
-warn("[GraveSync] syncEnabled = " .. tostring(syncEnabled))
+print("[GraveSync] HTTP функция найдена: " .. tostring(syncEnabled))
+if syncEnabled then
+    print("[GraveSync] Используем: " .. tostring(httpRequest))
+end
 
 -- ============================================================
--- СОСТОЯНИЕ
+-- СОСТОЯНИЕ СИНХРОНИЗАЦИИ
 -- ============================================================
 local myClientId  = LocalPlayer.Name .. "_" .. tostring(math.random(100000,999999))
 local lastVersion = -1
-local builtModels = {}
-local localGraves = {}
+local builtModels = {}   -- {[id] = Model или true}
+local localGraves = {}   -- {[id] = payload}
 local polling     = false
 local pollTimer   = 0
-local lastPushTime = 0
-local PUSH_COOLDOWN = 3  -- минимум секунд между push запросами
 
 -- ============================================================
--- УТИЛИТЫ GUI
+-- УТИЛИТЫ
 -- ============================================================
-local function addCorner(p, r)
+local function addCorner(parent, radius)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 8)
-    c.Parent = p
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = parent
     return c
 end
 
-local function addStroke(p, col, th)
+local function addStroke(parent, color, thickness)
     local s = Instance.new("UIStroke")
-    s.Color = col or Color3.fromRGB(60,60,60)
-    s.Thickness = th or 1
-    s.Parent = p
+    s.Color     = color     or Color3.fromRGB(60,60,60)
+    s.Thickness = thickness or 1
+    s.Parent    = parent
     return s
 end
 
--- ============================================================
--- УТИЛИТЫ ПОСТРОЕНИЯ
--- ============================================================
-local function makePart(model, name, size, cf, color, mat, tr)
+local function makePart(model, name, size, cf, color, material, transparency)
     local p = Instance.new("Part")
-    p.Name = name; p.Size = size; p.CFrame = cf
-    p.Anchored = true; p.CanCollide = false
-    p.Color = color or Color3.fromRGB(140,140,140)
-    p.Material = mat or Enum.Material.SmoothPlastic
-    p.Transparency = tr or 0
-    p.CastShadow = true
-    p.Parent = model
+    p.Name         = name
+    p.Size         = size
+    p.CFrame       = cf
+    p.Anchored     = true
+    p.CanCollide   = false
+    p.Color        = color        or Color3.fromRGB(140,140,140)
+    p.Material     = material     or Enum.Material.SmoothPlastic
+    p.Transparency = transparency or 0
+    p.CastShadow   = true
+    p.Parent       = model
     return p
 end
 
-local function makeWedge(model, name, size, cf, color, mat)
+local function makeWedge(model, name, size, cf, color, material)
     local p = Instance.new("WedgePart")
-    p.Name = name; p.Size = size; p.CFrame = cf
-    p.Anchored = true; p.CanCollide = false
-    p.Color = color or Color3.fromRGB(140,140,140)
-    p.Material = mat or Enum.Material.SmoothPlastic
-    p.Parent = model
+    p.Name       = name
+    p.Size       = size
+    p.CFrame     = cf
+    p.Anchored   = true
+    p.CanCollide = false
+    p.Color      = color    or Color3.fromRGB(140,140,140)
+    p.Material   = material or Enum.Material.SmoothPlastic
+    p.Parent     = model
     return p
 end
 
-local function v3t(v) return {x=v.X,y=v.Y,z=v.Z} end
-local function tv3(t) return Vector3.new(t.x,t.y,t.z) end
-local function genId() 
-    return myClientId.."_"..math.floor(os.clock()*10000)..math.random(100,999) 
+local function v3t(v) return {x=v.X, y=v.Y, z=v.Z} end
+local function tv3(t) return Vector3.new(t.x, t.y, t.z) end
+
+local function generateId()
+    return myClientId .. "_" .. tostring(math.floor(os.clock() * 1000))
+        .. tostring(math.random(1000,9999))
 end
 
-local SC  = Color3.fromRGB(150,145,135)  -- stone
-local DC  = Color3.fromRGB(85,82,75)     -- dark
-local RC  = Color3.fromRGB(75,58,45)     -- roof
-local SG  = Color3.fromRGB(140,140,140)  -- stoneGray
-local DG  = Color3.fromRGB(80,80,80)     -- darkGray
+-- Цвета
+local stoneC    = Color3.fromRGB(150,145,135)
+local darkC     = Color3.fromRGB(85,82,75)
+local roofC     = Color3.fromRGB(75,58,45)
+local stoneGray = Color3.fromRGB(140,140,140)
+local darkGray  = Color3.fromRGB(80,80,80)
 
 -- ============================================================
--- HTTP СЛОЙ
+-- HTTP ЗАПРОСЫ
 -- ============================================================
-local function doReq(opts)
+local function doRequest(options)
     if not syncEnabled then return nil end
-    -- нормализуем опции под разные исполнители
-    local req = {
-        Url     = opts.Url or opts.url,
-        Method  = opts.Method or opts.method or "GET",
-        Headers = opts.Headers or opts.headers or {},
-        Body    = opts.Body or opts.body or nil,
-    }
-    local ok, res = pcall(httpRequest, req)
+    local ok, result = pcall(httpRequest, options)
     if not ok then
-        warn("[GraveSync] doReq error: "..tostring(res))
+        warn("[GraveSync] request error: " .. tostring(result))
         return nil
     end
-    -- нормализуем ответ
-    if res then
-        res.StatusCode = res.StatusCode or res.status or res.StatusCode or 0
-        res.Body = res.Body or res.body or ""
-    end
-    return res
+    return result
 end
 
-local function jsonEncode(t)
-    local ok, r = pcall(HttpService.JSONEncode, HttpService, t)
-    return ok and r or nil
-end
-
-local function jsonDecode(s)
-    if not s or s == "" then return nil end
-    local ok, r = pcall(HttpService.JSONDecode, HttpService, s)
-    return ok and r or nil
-end
-
--- ============================================================
--- JSONBIN ОПЕРАЦИИ
--- ============================================================
-local function binGet()
-    local res = doReq({
-        Url = SYNC_URL.."/latest",
+local function fetchGraves()
+    local result = doRequest({
+        Url    = SYNC_URL .. "/latest",
         Method = "GET",
         Headers = {
             ["X-Master-Key"] = API_KEY,
             ["X-Bin-Meta"]   = "false",
         },
     })
-    if not res then return nil, nil end
+    if not result then return nil, nil end
 
-    local code = res.StatusCode
-    local body = res.Body
-
-    if code == 429 then
-        warn("[GraveSync] 429 Rate limit — уменьши POLL_INTERVAL или подожди")
-        return nil, nil
-    end
-
-    if code == 400 then
-        -- Bin пустой — это нормально при первом запуске
-        return {graves={}, removed={}}, 0
-    end
+    local body = result.Body or result.body or ""
+    local code = result.StatusCode or result.status or 0
 
     if code ~= 200 then
-        warn("[GraveSync] GET "..code.." | "..tostring(body):sub(1,80))
+        warn("[GraveSync] fetch HTTP " .. code .. " | " .. tostring(body):sub(1,120))
         return nil, nil
     end
 
-    local parsed = jsonDecode(body)
-    if not parsed then return nil, nil end
+    local ok, parsed = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok then
+        warn("[GraveSync] JSON decode error: " .. tostring(parsed))
+        return nil, nil
+    end
 
-    local version = parsed.metadata and parsed.metadata.version or 0
+    -- jsonbin v3 возвращает {record:{...}, metadata:{version:N}}
+    local version = (parsed.metadata and parsed.metadata.version) or 0
     local data    = parsed.record or parsed
-    if type(data) ~= "table" then data = {} end
-    data.graves  = data.graves  or {}
-    data.removed = data.removed or {}
     return data, version
 end
 
-local function binPut(data)
-    -- Rate limit защита
-    local now = os.clock()
-    if (now - lastPushTime) < PUSH_COOLDOWN then
-        warn("[GraveSync] Push слишком часто, пропускаем")
-        return false
-    end
-    lastPushTime = now
-
-    local safe = {
-        graves  = data.graves  or {},
-        removed = data.removed or {},
-    }
-
-    -- Дедупликация removed
-    local seen, clean = {}, {}
-    for _, id in ipairs(safe.removed) do
-        if not seen[id] then seen[id]=true; table.insert(clean, id) end
-    end
-    safe.removed = clean
-
-    -- Ограничиваем removed до 50 последних (чтобы не раздувать payload)
-    if #safe.removed > 50 then
-        local trimmed = {}
-        for i = #safe.removed-49, #safe.removed do
-            table.insert(trimmed, safe.removed[i])
-        end
-        safe.removed = trimmed
-    end
-
-    local body = jsonEncode(safe)
-    if not body or body == "" then
-        warn("[GraveSync] jsonEncode вернул nil")
+local function pushGraves(tbl)
+    local ok, body = pcall(HttpService.JSONEncode, HttpService, tbl)
+    if not ok then
+        warn("[GraveSync] JSON encode error: " .. tostring(body))
         return false
     end
 
-    local res = doReq({
+    local result = doRequest({
         Url    = SYNC_URL,
         Method = "PUT",
         Headers = {
@@ -252,49 +194,29 @@ local function binPut(data)
         },
         Body = body,
     })
+    if not result then return false end
 
-    if not res then return false end
-
-    local code = res.StatusCode
-    if code == 429 then
-        warn("[GraveSync] 429 Rate limit при push!")
-        return false
-    end
+    local code = result.StatusCode or result.status or 0
     if code ~= 200 then
-        warn("[GraveSync] PUT "..code.." | "..tostring(res.Body):sub(1,80))
+        warn("[GraveSync] push HTTP " .. code .. " | "
+            .. tostring(result.Body or result.body or ""):sub(1,120))
         return false
     end
     return true
 end
 
 -- ============================================================
--- ИНИЦИАЛИЗАЦИЯ BIN
--- ============================================================
-local function initBin()
-    local data, ver = binGet()
-    if data then
-        -- Bin уже существует
-        if ver == 0 and #data.graves == 0 then
-            -- Возможно пустой, записываем структуру
-            binPut({graves={}, removed={}})
-        end
-        return true
-    end
-    -- Bin недоступен — пробуем создать структуру
-    warn("[GraveSync] Bin недоступен, пробуем инициализировать...")
-    return binPut({graves={}, removed={}})
-end
-
--- ============================================================
 -- АВАТАР
 -- ============================================================
-local function cloneAvatarParts(tp, parent)
-    local char = tp and tp.Character
+local function cloneAvatarParts(targetPlayer, parentModel)
+    local char = targetPlayer and targetPlayer.Character
     if not char then return nil, nil, nil end
-    local folder = Instance.new("Model")
-    folder.Name = "AvatarCopy"; folder.Parent = parent
 
-    local names = {
+    local folder = Instance.new("Model")
+    folder.Name  = "AvatarCopy"
+    folder.Parent = parentModel
+
+    local bodyNames = {
         "Head","UpperTorso","LowerTorso",
         "LeftUpperArm","LeftLowerArm","LeftHand",
         "RightUpperArm","RightLowerArm","RightHand",
@@ -302,94 +224,113 @@ local function cloneAvatarParts(tp, parent)
         "RightUpperLeg","RightLowerLeg","RightFoot",
         "Torso","Left Arm","Right Arm","Left Leg","Right Leg",
     }
+
     local cloned = {}
-    for _, nm in ipairs(names) do
+    for _, nm in ipairs(bodyNames) do
         local p = char:FindFirstChild(nm)
         if p and p:IsA("BasePart") then
             local cl = p:Clone()
             for _, v in ipairs(cl:GetDescendants()) do
-                if v:IsA("Script") or v:IsA("LocalScript") or v:IsA("Motor6D")
-                or v:IsA("Weld") or v:IsA("WeldConstraint") or v:IsA("BodyMover") then
+                if v:IsA("Script") or v:IsA("LocalScript") or
+                   v:IsA("Motor6D") or v:IsA("Weld") or
+                   v:IsA("WeldConstraint") or v:IsA("BodyMover") then
                     v:Destroy()
                 end
             end
-            cl.Anchored=true; cl.CanCollide=false; cl.Parent=folder
-            cloned[nm] = cl
+            cl.Anchored   = true
+            cl.CanCollide = false
+            cl.Parent     = folder
+            cloned[nm]    = cl
         end
     end
-    for _, ch in ipairs(char:GetChildren()) do
-        if ch:IsA("Accessory") then
-            local cl = ch:Clone()
-            local h = cl:FindFirstChild("Handle")
+
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("Accessory") then
+            local cl = child:Clone()
+            local h  = cl:FindFirstChild("Handle")
             if h then
-                h.Anchored=true; h.CanCollide=false
+                h.Anchored   = true
+                h.CanCollide = false
                 for _, v in ipairs(h:GetDescendants()) do
-                    if v:IsA("Weld") or v:IsA("WeldConstraint")
-                    or v:IsA("Script") or v:IsA("LocalScript") then
+                    if v:IsA("Weld") or v:IsA("WeldConstraint") or
+                       v:IsA("Script") or v:IsA("LocalScript") then
                         v:Destroy()
                     end
                 end
             end
             cl.Parent = folder
-        elseif ch:IsA("Shirt") or ch:IsA("Pants") or ch:IsA("BodyColors") then
-            ch:Clone().Parent = folder
+        elseif child:IsA("Shirt") or child:IsA("Pants") or child:IsA("BodyColors") then
+            child:Clone().Parent = folder
         end
     end
+
     return folder, cloned, char
 end
 
-local function positionLying(folder, cloned, origChar, centerCF)
-    local hrp = origChar:FindFirstChild("HumanoidRootPart")
+local function positionAvatarLying(folder, cloned, originalChar, centerCF)
+    local hrp = originalChar:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-    for nm, cl in pairs(cloned) do
-        local orig = origChar:FindFirstChild(nm)
-        if orig then cl.CFrame = centerCF * hrp.CFrame:ToObjectSpace(orig.CFrame) end
+    for partName, cl in pairs(cloned) do
+        local orig = originalChar:FindFirstChild(partName)
+        if orig then
+            cl.CFrame = centerCF * hrp.CFrame:ToObjectSpace(orig.CFrame)
+        end
     end
-    for _, ch in ipairs(folder:GetChildren()) do
-        if ch:IsA("Accessory") then
-            local handle = ch:FindFirstChild("Handle")
+    for _, child in ipairs(folder:GetChildren()) do
+        if child:IsA("Accessory") then
+            local handle = child:FindFirstChild("Handle")
             local origAcc = nil
-            for _, oc in ipairs(origChar:GetChildren()) do
-                if oc:IsA("Accessory") and oc.Name==ch.Name then origAcc=oc; break end
+            for _, oc in ipairs(originalChar:GetChildren()) do
+                if oc:IsA("Accessory") and oc.Name == child.Name then
+                    origAcc = oc; break
+                end
             end
             if handle and origAcc then
                 local oh = origAcc:FindFirstChild("Handle")
-                if oh then handle.CFrame = centerCF * hrp.CFrame:ToObjectSpace(oh.CFrame) end
+                if oh then
+                    handle.CFrame = centerCF * hrp.CFrame:ToObjectSpace(oh.CFrame)
+                end
             end
         end
     end
 end
 
-local function placeHead(tp, parent, headPos)
-    local char = tp and tp.Character
+local function positionHeadAboveGrave(targetPlayer, parentModel, headPos)
+    local char = targetPlayer and targetPlayer.Character
     if not char then return end
     local head = char:FindFirstChild("Head")
     if not head then return end
+
     local cl = head:Clone()
     for _, v in ipairs(cl:GetDescendants()) do
-        if v:IsA("Script") or v:IsA("LocalScript")
-        or v:IsA("Motor6D") or v:IsA("Weld") or v:IsA("WeldConstraint") then
+        if v:IsA("Script") or v:IsA("LocalScript") or
+           v:IsA("Motor6D") or v:IsA("Weld") or v:IsA("WeldConstraint") then
             v:Destroy()
         end
     end
-    cl.Anchored=true; cl.CanCollide=false
-    cl.CFrame = CFrame.new(headPos) * CFrame.Angles(0, math.rad(180), 0)
-    cl.Parent = parent
+    cl.Anchored   = true
+    cl.CanCollide = false
+    cl.CFrame     = CFrame.new(headPos) * CFrame.Angles(0, math.rad(180), 0)
+    cl.Parent     = parentModel
+
     for _, acc in ipairs(char:GetChildren()) do
         if acc:IsA("Accessory") then
             local oh = acc:FindFirstChild("Handle")
             if oh then
-                local acl = acc:Clone()
-                local clh = acl:FindFirstChild("Handle")
-                if clh then
-                    for _, v in ipairs(clh:GetDescendants()) do
-                        if v:IsA("Weld") or v:IsA("WeldConstraint")
-                        or v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
+                local accCl = acc:Clone()
+                local clH   = accCl:FindFirstChild("Handle")
+                if clH then
+                    for _, v in ipairs(clH:GetDescendants()) do
+                        if v:IsA("Weld") or v:IsA("WeldConstraint") or
+                           v:IsA("Script") or v:IsA("LocalScript") then
+                            v:Destroy()
+                        end
                     end
-                    clh.Anchored=true; clh.CanCollide=false
-                    clh.CFrame = cl.CFrame * head.CFrame:ToObjectSpace(oh.CFrame)
+                    clH.Anchored   = true
+                    clH.CanCollide = false
+                    clH.CFrame     = cl.CFrame * head.CFrame:ToObjectSpace(oh.CFrame)
                 end
-                acl.Parent = parent
+                accCl.Parent = parentModel
             end
         end
     end
@@ -398,580 +339,820 @@ end
 -- ============================================================
 -- СТРОИТЕЛИ
 -- ============================================================
-local function buildGrave(origin, style, pName, tp)
-    local m = Instance.new("Model"); m.Name="Grave_"..pName
-    local slab = makePart(m,"Slab",Vector3.new(4,.25,7),
-        CFrame.new(origin+Vector3.new(0,.125,0)),Color3.fromRGB(75,65,55))
-    makePart(m,"Mound",Vector3.new(3.5,.18,6.5),
-        CFrame.new(origin+Vector3.new(0,.27,0)),Color3.fromRGB(65,50,35),Enum.Material.Grass)
-    local sz = origin.Z-2.8
-    if style=="rip" then
-        local st = makePart(m,"Stone",Vector3.new(2.4,3.2,.45),
-            CFrame.new(origin.X,origin.Y+1.9,sz),SG)
-        local cap = makePart(m,"Cap",Vector3.new(2.4,.45,.45),
-            CFrame.new(CFrame.new(origin.X,origin.Y+3.7,sz)*CFrame.Angles(0,0,math.rad(90))),SG)
-        local mesh=Instance.new("SpecialMesh"); mesh.MeshType=Enum.MeshType.Cylinder; mesh.Parent=cap
-        local sg=Instance.new("SurfaceGui"); sg.Face=Enum.NormalId.Back
-        sg.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud; sg.PixelsPerStud=60; sg.Parent=st
-        local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,0,1,0)
-        lb.BackgroundTransparency=1; lb.TextColor3=Color3.fromRGB(30,30,30)
-        lb.Text="R.I.P\n"..pName; lb.Font=Enum.Font.GothamBold; lb.TextScaled=true; lb.Parent=sg
-    elseif style=="cross" then
-        makePart(m,"CV",Vector3.new(.35,4.2,.35),CFrame.new(origin.X,origin.Y+2.4,sz),DG)
-        makePart(m,"CH",Vector3.new(2.2,.35,.35),CFrame.new(origin.X,origin.Y+3.4,sz),DG)
-        makePart(m,"CB",Vector3.new(1,.25,.6),CFrame.new(origin.X,origin.Y+.38,sz),DG)
+local function buildGraveModel(origin, style, playerName, targetPlayer)
+    local model   = Instance.new("Model")
+    model.Name    = "Grave_" .. playerName
+
+    local slab = makePart(model,"Slab", Vector3.new(4,0.25,7),
+        CFrame.new(origin+Vector3.new(0,0.125,0)), Color3.fromRGB(75,65,55))
+
+    makePart(model,"Mound", Vector3.new(3.5,0.18,6.5),
+        CFrame.new(origin+Vector3.new(0,0.27,0)),
+        Color3.fromRGB(65,50,35), Enum.Material.Grass)
+
+    local stoneZ = origin.Z - 2.8
+
+    if style == "rip" then
+        local stone = makePart(model,"Gravestone", Vector3.new(2.4,3.2,0.45),
+            CFrame.new(Vector3.new(origin.X,origin.Y+1.9,stoneZ)), stoneGray)
+
+        local cap = makePart(model,"Cap", Vector3.new(2.4,0.45,0.45),
+            CFrame.new(Vector3.new(origin.X,origin.Y+3.7,stoneZ))
+                * CFrame.Angles(0,0,math.rad(90)), stoneGray)
+        local mesh = Instance.new("SpecialMesh")
+        mesh.MeshType = Enum.MeshType.Cylinder
+        mesh.Parent   = cap
+
+        local sg = Instance.new("SurfaceGui")
+        sg.Face          = Enum.NormalId.Back
+        sg.SizingMode    = Enum.SurfaceGuiSizingMode.PixelsPerStud
+        sg.PixelsPerStud = 60
+        sg.Parent        = stone
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size               = UDim2.new(1,0,1,0)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3         = Color3.fromRGB(30,30,30)
+        lbl.Text               = "R.I.P\n" .. playerName
+        lbl.Font               = Enum.Font.GothamBold
+        lbl.TextScaled         = true
+        lbl.Parent             = sg
+
+    elseif style == "cross" then
+        makePart(model,"CrossV", Vector3.new(0.35,4.2,0.35),
+            CFrame.new(Vector3.new(origin.X,origin.Y+2.4,stoneZ)), darkGray)
+        makePart(model,"CrossH", Vector3.new(2.2,0.35,0.35),
+            CFrame.new(Vector3.new(origin.X,origin.Y+3.4,stoneZ)), darkGray)
+        makePart(model,"CrossBase", Vector3.new(1.0,0.25,0.6),
+            CFrame.new(Vector3.new(origin.X,origin.Y+0.38,stoneZ)), darkGray)
     end
-    if tp then placeHead(tp,m,Vector3.new(origin.X,origin.Y+1.6,origin.Z+1)) end
-    m.PrimaryPart=slab; m.Parent=workspace
-    return m
+
+    if targetPlayer then
+        positionHeadAboveGrave(targetPlayer, model,
+            Vector3.new(origin.X, origin.Y+1.6, origin.Z+1.0))
+    end
+
+    model.PrimaryPart = slab
+    model.Parent      = workspace
+    return model
 end
 
-local function buildCrypt(origin, pName, tp)
-    local m=Instance.new("Model"); m.Name="Crypt_"..pName
-    local w,d,h=9,13,6
-    makePart(m,"Floor",Vector3.new(w,.3,d),CFrame.new(origin+Vector3.new(0,.15,0)),SC)
-    makePart(m,"WallBack",Vector3.new(w,h,.5),CFrame.new(origin+Vector3.new(0,h/2,-d/2)),SC)
-    makePart(m,"WallL",Vector3.new(.5,h,d),CFrame.new(origin+Vector3.new(-w/2,h/2,0)),SC)
-    makePart(m,"WallR",Vector3.new(.5,h,d),CFrame.new(origin+Vector3.new(w/2,h/2,0)),SC)
-    makePart(m,"WallFL",Vector3.new(2.8,h,.5),CFrame.new(origin+Vector3.new(-(w/2)+1.4,h/2,d/2)),SC)
-    makePart(m,"WallFR",Vector3.new(2.8,h,.5),CFrame.new(origin+Vector3.new((w/2)-1.4,h/2,d/2)),SC)
-    makePart(m,"Lintel",Vector3.new(3.4,1.5,.5),CFrame.new(origin+Vector3.new(0,h-.75,d/2)),SC)
-    makePart(m,"Roof",Vector3.new(w+.8,.4,d+.8),CFrame.new(origin+Vector3.new(0,h+.2,0)),DC)
-    local pedH=1.6
-    local ped=makeWedge(m,"Ped",Vector3.new(w+.8,pedH,2.5),
-        CFrame.new(origin+Vector3.new(0,h+pedH/2+.4,d/2+1.25))*CFrame.Angles(0,math.rad(180),0),SC)
-    local sg=Instance.new("SurfaceGui"); sg.Face=Enum.NormalId.Front
-    sg.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud; sg.PixelsPerStud=35; sg.Parent=ped
-    local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,0,1,0)
-    lb.BackgroundTransparency=1; lb.TextColor3=Color3.fromRGB(20,20,20)
-    lb.Text=pName; lb.Font=Enum.Font.GothamBold; lb.TextScaled=true; lb.Parent=sg
-    makePart(m,"RCV",Vector3.new(.3,2.5,.3),CFrame.new(origin+Vector3.new(0,h+1.65,0)),DG)
-    makePart(m,"RCH",Vector3.new(1.4,.3,.3),CFrame.new(origin+Vector3.new(0,h+2.5,0)),DG)
-    for _,x in ipairs({-1.4,1.4}) do
-        makePart(m,"Col",Vector3.new(.5,h,.5),CFrame.new(origin+Vector3.new(x,h/2,d/2)),SC)
+local function buildCrypt(origin, playerName, targetPlayer)
+    local model = Instance.new("Model")
+    model.Name  = "Crypt_" .. playerName
+    local w,d,h = 9,13,6
+
+    makePart(model,"Floor",     Vector3.new(w,0.3,d),
+        CFrame.new(origin+Vector3.new(0,0.15,0)), stoneC)
+    makePart(model,"WallBack",  Vector3.new(w,h,0.5),
+        CFrame.new(origin+Vector3.new(0,h/2,-d/2)), stoneC)
+    makePart(model,"WallLeft",  Vector3.new(0.5,h,d),
+        CFrame.new(origin+Vector3.new(-w/2,h/2,0)), stoneC)
+    makePart(model,"WallRight", Vector3.new(0.5,h,d),
+        CFrame.new(origin+Vector3.new(w/2,h/2,0)), stoneC)
+    makePart(model,"WallFrontL",Vector3.new(2.8,h,0.5),
+        CFrame.new(origin+Vector3.new(-(w/2)+1.4,h/2,d/2)), stoneC)
+    makePart(model,"WallFrontR",Vector3.new(2.8,h,0.5),
+        CFrame.new(origin+Vector3.new((w/2)-1.4,h/2,d/2)), stoneC)
+    makePart(model,"DoorLintel",Vector3.new(3.4,1.5,0.5),
+        CFrame.new(origin+Vector3.new(0,h-0.75,d/2)), stoneC)
+    makePart(model,"Roof",      Vector3.new(w+0.8,0.4,d+0.8),
+        CFrame.new(origin+Vector3.new(0,h+0.2,0)), darkC)
+
+    local pedH = 1.6
+    local ped  = makeWedge(model,"Pediment", Vector3.new(w+0.8,pedH,2.5),
+        CFrame.new(origin+Vector3.new(0,h+pedH/2+0.4,d/2+1.25))
+            * CFrame.Angles(0,math.rad(180),0), stoneC)
+
+    local sg = Instance.new("SurfaceGui")
+    sg.Face          = Enum.NormalId.Front
+    sg.SizingMode    = Enum.SurfaceGuiSizingMode.PixelsPerStud
+    sg.PixelsPerStud = 35
+    sg.Parent        = ped
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size               = UDim2.new(1,0,1,0)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3         = Color3.fromRGB(20,20,20)
+    lbl.Text               = playerName
+    lbl.Font               = Enum.Font.GothamBold
+    lbl.TextScaled         = true
+    lbl.Parent             = sg
+
+    makePart(model,"RoofCrossV",Vector3.new(0.3,2.5,0.3),
+        CFrame.new(origin+Vector3.new(0,h+1.65,0)), darkGray)
+    makePart(model,"RoofCrossH",Vector3.new(1.4,0.3,0.3),
+        CFrame.new(origin+Vector3.new(0,h+2.5,0)), darkGray)
+
+    for _, xOff in ipairs({-1.4, 1.4}) do
+        makePart(model,"Column",Vector3.new(0.5,h,0.5),
+            CFrame.new(origin+Vector3.new(xOff,h/2,d/2)), stoneC)
     end
-    local sz=-d/2+4.5
-    makePart(m,"SBase",Vector3.new(2.6,.7,6),CFrame.new(origin+Vector3.new(0,.65,sz)),Color3.fromRGB(160,155,145))
-    makePart(m,"SLid",Vector3.new(2.4,.28,5.8),CFrame.new(origin+Vector3.new(0,1.04,sz)),Color3.fromRGB(175,170,160))
-    if tp and tp.Character then
-        local folder,cloned,origChar=cloneAvatarParts(tp,m)
+
+    local sarcZ = -d/2 + 4.5
+    makePart(model,"SarcBase",Vector3.new(2.6,0.7,6),
+        CFrame.new(origin+Vector3.new(0,0.65,sarcZ)),
+        Color3.fromRGB(160,155,145))
+    makePart(model,"SarcLid", Vector3.new(2.4,0.28,5.8),
+        CFrame.new(origin+Vector3.new(0,1.04,sarcZ)),
+        Color3.fromRGB(175,170,160))
+
+    if targetPlayer and targetPlayer.Character then
+        local folder, cloned, origChar = cloneAvatarParts(targetPlayer, model)
         if folder and cloned then
-            positionLying(folder,cloned,origChar,
-                CFrame.new(origin+Vector3.new(0,1.4,sz))*CFrame.Angles(math.rad(-90),math.rad(180),0))
+            local centerCF = CFrame.new(origin+Vector3.new(0,1.4,sarcZ))
+                * CFrame.Angles(math.rad(-90), math.rad(180), 0)
+            positionAvatarLying(folder, cloned, origChar, centerCF)
         end
     end
-    m.PrimaryPart=m:FindFirstChild("Floor"); m.Parent=workspace
-    return m
+
+    model.PrimaryPart = model:FindFirstChild("Floor")
+    model.Parent      = workspace
+    return model
 end
 
 local function buildChapel(origin)
-    local m=Instance.new("Model"); m.Name="Chapel"
-    local w,d,h=11,16,8
-    makePart(m,"Found",Vector3.new(w+1.5,.6,d+1.5),CFrame.new(origin+Vector3.new(0,.3,0)),Color3.fromRGB(100,95,85))
-    makePart(m,"WB",Vector3.new(w,h,.55),CFrame.new(origin+Vector3.new(0,h/2,-d/2)),SC)
-    makePart(m,"WL",Vector3.new(.55,h,d),CFrame.new(origin+Vector3.new(-w/2,h/2,0)),SC)
-    makePart(m,"WR",Vector3.new(.55,h,d),CFrame.new(origin+Vector3.new(w/2,h/2,0)),SC)
-    local dW=3.5; local sW=(w-dW)/2
-    makePart(m,"WFL",Vector3.new(sW,h,.55),CFrame.new(origin+Vector3.new(-(dW/2+sW/2),h/2,d/2)),SC)
-    makePart(m,"WFR",Vector3.new(sW,h,.55),CFrame.new(origin+Vector3.new(dW/2+sW/2,h/2,d/2)),SC)
-    makePart(m,"DL",Vector3.new(dW,h-5.5,.55),CFrame.new(origin+Vector3.new(0,5.5+(h-5.5)/2,d/2)),SC)
-    local rH=3.5
-    makeWedge(m,"RB",Vector3.new(w+1,rH,d/2+.5),CFrame.new(origin+Vector3.new(0,h+rH/2,-d/4))*CFrame.Angles(0,math.rad(180),0),RC)
-    makeWedge(m,"RF",Vector3.new(w+1,rH,d/2+.5),CFrame.new(origin+Vector3.new(0,h+rH/2,d/4)),RC)
-    local tW,tH=4,13
-    local tX=origin.X+w/2+tW/2+.2; local tZ=origin.Z+d/2-tW/2-1
-    makePart(m,"Tower",Vector3.new(tW,tH,tW),CFrame.new(tX,origin.Y+tH/2,tZ),SC)
-    makePart(m,"Bell",Vector3.new(tW,.3,tW),CFrame.new(tX,origin.Y+tH+.15,tZ),SC)
-    local sH=4
-    makeWedge(m,"SpF",Vector3.new(tW,sH,tW/2),CFrame.new(tX,origin.Y+tH+sH/2,tZ-tW/4),RC)
-    makeWedge(m,"SpB",Vector3.new(tW,sH,tW/2),CFrame.new(tX,origin.Y+tH+sH/2,tZ+tW/4)*CFrame.Angles(0,math.rad(180),0),RC)
-    makePart(m,"TCV",Vector3.new(.3,2.8,.3),CFrame.new(tX,origin.Y+tH+sH+1.6,tZ),DG)
-    makePart(m,"TCH",Vector3.new(1.6,.3,.3),CFrame.new(tX,origin.Y+tH+sH+2.4,tZ),DG)
-    local fW,fD,fH2=w+10,d+10,1.3; local fC=Color3.fromRGB(55,48,40)
-    makePart(m,"FkB",Vector3.new(fW,fH2,.2),CFrame.new(origin+Vector3.new(0,fH2/2,-fD/2)),fC)
-    makePart(m,"FkF",Vector3.new(fW,fH2,.2),CFrame.new(origin+Vector3.new(0,fH2/2,fD/2)),fC)
-    makePart(m,"FkL",Vector3.new(.2,fH2,fD),CFrame.new(origin+Vector3.new(-fW/2,fH2/2,0)),fC)
-    makePart(m,"FkR",Vector3.new(.2,fH2,fD),CFrame.new(origin+Vector3.new(fW/2,fH2/2,0)),fC)
+    local model = Instance.new("Model")
+    model.Name  = "Chapel"
+    local w,d,h = 11,16,8
+
+    makePart(model,"Foundation",Vector3.new(w+1.5,0.6,d+1.5),
+        CFrame.new(origin+Vector3.new(0,0.3,0)), Color3.fromRGB(100,95,85))
+    makePart(model,"WallBack",  Vector3.new(w,h,0.55),
+        CFrame.new(origin+Vector3.new(0,h/2,-d/2)), stoneC)
+    makePart(model,"WallLeft",  Vector3.new(0.55,h,d),
+        CFrame.new(origin+Vector3.new(-w/2,h/2,0)), stoneC)
+    makePart(model,"WallRight", Vector3.new(0.55,h,d),
+        CFrame.new(origin+Vector3.new(w/2,h/2,0)), stoneC)
+
+    local doorW = 3.5
+    local sideW = (w-doorW)/2
+    makePart(model,"WallFrontL",Vector3.new(sideW,h,0.55),
+        CFrame.new(origin+Vector3.new(-(doorW/2+sideW/2),h/2,d/2)), stoneC)
+    makePart(model,"WallFrontR",Vector3.new(sideW,h,0.55),
+        CFrame.new(origin+Vector3.new( (doorW/2+sideW/2),h/2,d/2)), stoneC)
+    makePart(model,"DoorLintel",Vector3.new(doorW,h-5.5,0.55),
+        CFrame.new(origin+Vector3.new(0,5.5+(h-5.5)/2,d/2)), stoneC)
+
+    local rH = 3.5
+    makeWedge(model,"RoofBack", Vector3.new(w+1,rH,d/2+0.5),
+        CFrame.new(origin+Vector3.new(0,h+rH/2,-d/4))
+            * CFrame.Angles(0,math.rad(180),0), roofC)
+    makeWedge(model,"RoofFront",Vector3.new(w+1,rH,d/2+0.5),
+        CFrame.new(origin+Vector3.new(0,h+rH/2,d/4)), roofC)
+
+    local tW     = 4; local tH = 13
+    local towerX = origin.X + w/2 + tW/2 + 0.2
+    local towerZ = origin.Z + d/2 - tW/2 - 1
+
+    makePart(model,"TowerBase", Vector3.new(tW,tH,tW),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH/2,towerZ)), stoneC)
+    makePart(model,"BellFloor", Vector3.new(tW,0.3,tW),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH+0.15,towerZ)), stoneC)
+
+    local spireH = 4
+    makeWedge(model,"SpireF",Vector3.new(tW,spireH,tW/2),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH/2,towerZ-tW/4)), roofC)
+    makeWedge(model,"SpireB",Vector3.new(tW,spireH,tW/2),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH/2,towerZ+tW/4))
+            * CFrame.Angles(0,math.rad(180),0), roofC)
+
+    makePart(model,"TowerCrossV",Vector3.new(0.3,2.8,0.3),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH+1.6,towerZ)), darkGray)
+    makePart(model,"TowerCrossH",Vector3.new(1.6,0.3,0.3),
+        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH+2.4,towerZ)), darkGray)
+
+    local fW=w+10; local fD=d+10; local fH=1.3
+    local fC=Color3.fromRGB(55,48,40)
+    makePart(model,"FenceBack",  Vector3.new(fW,fH,0.2), CFrame.new(origin+Vector3.new(0,fH/2,-fD/2)), fC)
+    makePart(model,"FenceFront", Vector3.new(fW,fH,0.2), CFrame.new(origin+Vector3.new(0,fH/2, fD/2)), fC)
+    makePart(model,"FenceLeft",  Vector3.new(0.2,fH,fD), CFrame.new(origin+Vector3.new(-fW/2,fH/2,0)), fC)
+    makePart(model,"FenceRight", Vector3.new(0.2,fH,fD), CFrame.new(origin+Vector3.new( fW/2,fH/2,0)), fC)
     for i=0,9 do
-        local xp=-fW/2+(i/9)*fW
-        makePart(m,"SpkF"..i,Vector3.new(.14,.45,.14),CFrame.new(origin+Vector3.new(xp,fH2+.22,fD/2)),DG)
-        makePart(m,"SpkB"..i,Vector3.new(.14,.45,.14),CFrame.new(origin+Vector3.new(xp,fH2+.22,-fD/2)),DG)
+        local xp = -fW/2 + (i/9)*fW
+        makePart(model,"SpikeF"..i,Vector3.new(0.14,0.45,0.14),
+            CFrame.new(origin+Vector3.new(xp,fH+0.22, fD/2)), darkGray)
+        makePart(model,"SpikeB"..i,Vector3.new(0.14,0.45,0.14),
+            CFrame.new(origin+Vector3.new(xp,fH+0.22,-fD/2)), darkGray)
     end
-    m.Parent=workspace; return m
+
+    model.Parent = workspace
+    return model
 end
 
-local function buildCemetery(origin, pList)
-    local offs={
-        Vector3.new(-6,0,-5),Vector3.new(0,0,-5),Vector3.new(6,0,-5),
-        Vector3.new(-6,0,3),Vector3.new(0,0,3),Vector3.new(6,0,3),
+local function buildCemetery(origin, playersList)
+    local offsets = {
+        Vector3.new(-6,0,-5), Vector3.new(0,0,-5), Vector3.new(6,0,-5),
+        Vector3.new(-6,0, 3), Vector3.new(0,0, 3), Vector3.new(6,0, 3),
     }
-    local stls={"rip","cross","rip","cross","rip","cross"}
-    for i,off in ipairs(offs) do
-        local tp=pList[i]; local pn=tp and tp.Name or "Soul_"..i
-        buildGrave(origin+off, stls[i], pn, tp)
+    local gStyles = {"rip","cross","rip","cross","rip","cross"}
+    for i, offset in ipairs(offsets) do
+        local tp    = playersList[i]
+        local pName = tp and tp.Name or ("Soul_"..i)
+        buildGraveModel(origin+offset, gStyles[i], pName, tp)
     end
     buildChapel(origin+Vector3.new(0,0,-22))
 end
 
-local function clearGraves()
-    for _,v in ipairs(workspace:GetChildren()) do
+local function removeExistingGraves()
+    for _, v in ipairs(workspace:GetChildren()) do
         if v:IsA("Model") and (
-            v.Name:sub(1,6)=="Grave_" or v.Name:sub(1,6)=="Crypt_"
-            or v.Name=="Chapel" or v.Name=="Cemetery"
+            v.Name:sub(1,6)=="Grave_" or
+            v.Name:sub(1,6)=="Crypt_" or
+            v.Name=="Chapel" or v.Name=="Cemetery"
         ) then v:Destroy() end
     end
 end
 
 -- ============================================================
--- BUILD FROM PAYLOAD
+-- BUILD FROM PAYLOAD (от других клиентов)
+-- !! Объявлена ДО polling и GUI !!
 -- ============================================================
 local function buildFromPayload(payload)
     if not payload or not payload.id then return end
     if builtModels[payload.id] then return end
+
     local origin = tv3(payload.origin)
     local pName  = payload.playerName or "Unknown"
+    local style  = payload.style      or "rip"
     local tp     = Players:FindFirstChild(pName)
     local model  = nil
-    if payload.graveType=="grave" then
-        model = buildGrave(origin, payload.style or "rip", pName, tp)
-    elseif payload.graveType=="crypt" then
+
+    if payload.graveType == "grave" then
+        model = buildGraveModel(origin, style, pName, tp)
+    elseif payload.graveType == "crypt" then
         model = buildCrypt(origin, pName, tp)
-    elseif payload.graveType=="cemetery" then
-        local lst={}
-        for _,nm in ipairs(payload.playerNames or {}) do
-            local p=Players:FindFirstChild(nm)
-            table.insert(lst, p or {Name=nm,Character=nil})
+    elseif payload.graveType == "cemetery" then
+        local list = {}
+        for _, nm in ipairs(payload.playerNames or {}) do
+            local p = Players:FindFirstChild(nm)
+            table.insert(list, p or {Name=nm, Character=nil})
         end
-        buildCemetery(origin, lst)
-        builtModels[payload.id]=true
+        buildCemetery(origin, list)
+        builtModels[payload.id] = true
         return
     end
+
     if model then
-        builtModels[payload.id]=model
-        print("[GraveSync] Построено от "..tostring(payload.owner).." : "..pName)
+        builtModels[payload.id] = model
+        print("[GraveSync] Построено от " .. tostring(payload.owner) .. ": " .. pName)
     end
 end
 
 -- ============================================================
--- SYNC ОПЕРАЦИИ
+-- SYNC ФУНКЦИИ
 -- ============================================================
-
--- Очередь отложенных push (чтобы не спамить)
-local pendingPush = nil
-local pushTimer   = 0
-local PUSH_DELAY  = 2  -- секунд после последнего изменения до push
-
-local function schedulePush(data)
-    pendingPush = data
-    pushTimer   = PUSH_DELAY
-end
-
--- Обработка очереди push в Heartbeat
-RunService.Heartbeat:Connect(function(dt)
-    if pendingPush and pushTimer > 0 then
-        pushTimer = pushTimer - dt
-        if pushTimer <= 0 then
-            local d = pendingPush
-            pendingPush = nil
-            task.spawn(function()
-                local ok = binPut(d)
-                if ok then print("[GraveSync] ✓ Push успешен") end
-            end)
-        end
-    end
-end)
-
 local function syncBuild(payload)
     if not syncEnabled then return end
     payload.owner = myClientId
-    localGraves[payload.id] = payload
-
     task.spawn(function()
-        local data = binGet()
-        if not data then data={graves={},removed={}} end
-        -- Удаляем этот id из removed если он там есть
-        local newRem={}
-        for _,id in ipairs(data.removed) do
-            if id ~= payload.id then table.insert(newRem,id) end
+        local data = fetchGraves()
+        if not data then data = {graves={},removed={}} end
+        data.graves  = data.graves  or {}
+        data.removed = data.removed or {}
+        table.insert(data.graves, payload)
+        localGraves[payload.id] = payload
+        local ok = pushGraves(data)
+        if ok then
+            print("[GraveSync] ✓ Отправлено: " .. payload.playerName)
         end
-        data.removed = newRem
-        -- Добавляем в graves если нет
-        local exists=false
-        for _,g in ipairs(data.graves) do
-            if g.id==payload.id then exists=true; break end
-        end
-        if not exists then table.insert(data.graves, payload) end
-        schedulePush(data)
-        print("[GraveSync] → Запланирован push: "..pName)
-    end)
-end
-
-local function syncRemove(ids)
-    if not syncEnabled then return end
-    task.spawn(function()
-        local data = binGet()
-        if not data then return end
-        local idSet={}; for _,id in ipairs(ids) do idSet[id]=true end
-        -- Убираем из graves
-        local newG={}
-        for _,g in ipairs(data.graves) do
-            if not idSet[g.id] then table.insert(newG,g) end
-        end
-        data.graves=newG
-        -- Добавляем в removed
-        for _,id in ipairs(ids) do table.insert(data.removed,id) end
-        schedulePush(data)
-        -- Чистим localGraves
-        for _,id in ipairs(ids) do localGraves[id]=nil end
-        print("[GraveSync] → Запланировано удаление: "..#ids.." могил")
     end)
 end
 
 local function syncRemoveAll()
-    local ids={}
-    for id,_ in pairs(localGraves) do table.insert(ids,id) end
-    if #ids > 0 then syncRemove(ids) end
+    if not syncEnabled then return end
+    task.spawn(function()
+        local data = fetchGraves()
+        if not data then return end
+        data.graves  = data.graves  or {}
+        data.removed = data.removed or {}
+        local myIds  = {}
+        for id,_ in pairs(localGraves) do myIds[id]=true end
+        local newG = {}
+        for _, g in ipairs(data.graves) do
+            if myIds[g.id] then
+                table.insert(data.removed, g.id)
+            else
+                table.insert(newG, g)
+            end
+        end
+        data.graves = newG
+        pushGraves(data)
+        localGraves = {}
+    end)
 end
 
 -- ============================================================
--- POLLING (с защитой от 429)
+-- POLLING
 -- ============================================================
 RunService.Heartbeat:Connect(function(dt)
     if not syncEnabled then return end
     pollTimer = pollTimer + dt
     if pollTimer < POLL_INTERVAL then return end
     if polling then return end
-    pollTimer = 0; polling = true
+    pollTimer = 0
+    polling   = true
 
     task.spawn(function()
         local ok, err = pcall(function()
-            local data, version = binGet()
-            if not data then return end
+            local data, version = fetchGraves()
+            if not data or not version then return end
+            if version <= lastVersion  then return end
+            lastVersion = version
 
-            -- Версия не изменилась
-            if version > 0 and version <= lastVersion then return end
-            if version > 0 then lastVersion = version end
-
-            -- Удаляем помеченные
-            for _,id in ipairs(data.removed or {}) do
-                if not localGraves[id] then  -- не удаляем свои
-                    local mdl = builtModels[id]
-                    if mdl and type(mdl)~="boolean" then
-                        pcall(function() mdl:Destroy() end)
-                    end
-                    builtModels[id]=nil
+            for _, id in ipairs(data.removed or {}) do
+                local m = builtModels[id]
+                if m and type(m) ~= "boolean" then
+                    pcall(function() m:Destroy() end)
                 end
+                builtModels[id] = nil
             end
 
-            -- Строим новые чужие
-            for _,payload in ipairs(data.graves or {}) do
+            for _, payload in ipairs(data.graves or {}) do
                 if payload.owner ~= myClientId then
                     buildFromPayload(payload)
                 end
             end
         end)
-        if not ok then warn("[GraveSync] poll err: "..tostring(err)) end
-        polling=false
+        if not ok then warn("[GraveSync] poll error: "..tostring(err)) end
+        polling = false
     end)
 end)
 
 -- Стартовая синхронизация
-task.delay(4, function()
+task.delay(3, function()
     if not syncEnabled then
-        warn("[GraveSync] HTTP недоступен")
+        warn("[GraveSync] HTTP недоступен — синхронизация отключена")
         return
     end
-    print("[GraveSync] Инициализация...")
-    initBin()
-    task.wait(2)
-    local data, version = binGet()
+    local data, version = fetchGraves()
     if not data then
-        warn("[GraveSync] Стартовые данные недоступны")
+        warn("[GraveSync] Не удалось получить данные при старте")
         return
     end
     lastVersion = version or -1
-    local cnt=0
-    for _,payload in ipairs(data.graves or {}) do
+    local count = 0
+    for _, payload in ipairs(data.graves or {}) do
         if payload.owner ~= myClientId then
-            pcall(buildFromPayload,payload); cnt=cnt+1
+            pcall(buildFromPayload, payload)
+            count = count + 1
         end
     end
-    print("[GraveSync] ✓ Загружено могил: "..cnt)
+    print("[GraveSync] ✓ Старт синхронизация: " .. count .. " могил загружено")
 end)
 
 -- ============================================================
 -- GUI
 -- ============================================================
+-- Удаляем старый GUI если есть
 local oldGui = LocalPlayer.PlayerGui:FindFirstChild("GraveBuilder")
 if oldGui then oldGui:Destroy() end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name="GraveBuilder"; screenGui.ResetOnSpawn=false
-screenGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
-screenGui.Parent=LocalPlayer.PlayerGui
+screenGui.Name           = "GraveBuilder"
+screenGui.ResetOnSpawn   = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent         = LocalPlayer.PlayerGui
 
-local frame=Instance.new("Frame")
-frame.Size=UDim2.new(0,380,0,600)
-frame.Position=UDim2.new(0.5,-190,0.5,-300)
-frame.BackgroundColor3=Color3.fromRGB(22,22,22)
-frame.BorderSizePixel=0; frame.Parent=screenGui
-addCorner(frame,12); addStroke(frame,Color3.fromRGB(55,55,55),1.5)
+local frame = Instance.new("Frame")
+frame.Size             = UDim2.new(0,380,0,620)
+frame.Position         = UDim2.new(0.5,-190,0.5,-310)
+frame.BackgroundColor3 = Color3.fromRGB(22,22,22)
+frame.BorderSizePixel  = 0
+frame.Parent           = screenGui
+addCorner(frame,12)
+addStroke(frame, Color3.fromRGB(55,55,55), 1.5)
 
 -- Drag
-local drag,ds,sp=false,nil,nil
-frame.InputBegan:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then
-        drag=true; ds=i.Position; sp=frame.Position end end)
-frame.InputChanged:Connect(function(i)
-    if drag and i.UserInputType==Enum.UserInputType.MouseMovement then
-        local d=i.Position-ds
-        frame.Position=UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y) end end)
-frame.InputEnded:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then drag=false end end)
+local dragging,dragStart,startPos = false,nil,nil
+frame.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging=true; dragStart=inp.Position; startPos=frame.Position
+    end
+end)
+frame.InputChanged:Connect(function(inp)
+    if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = inp.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset+d.X,
+            startPos.Y.Scale, startPos.Y.Offset+d.Y)
+    end
+end)
+frame.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end
+end)
 
--- Шапка
-local tb=Instance.new("Frame")
-tb.Size=UDim2.new(1,0,0,44); tb.BackgroundColor3=Color3.fromRGB(15,15,15)
-tb.BorderSizePixel=0; tb.Parent=frame; addCorner(tb,12)
+-- Заголовок
+local titleBar = Instance.new("Frame")
+titleBar.Size             = UDim2.new(1,0,0,44)
+titleBar.BackgroundColor3 = Color3.fromRGB(15,15,15)
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = frame
+addCorner(titleBar,12)
 
-local tl=Instance.new("TextLabel")
-tl.Size=UDim2.new(1,-90,1,0); tl.Position=UDim2.new(0,10,0,0)
-tl.BackgroundTransparency=1; tl.TextColor3=Color3.fromRGB(220,220,220)
-tl.Text="⚰️  Grave Builder"; tl.Font=Enum.Font.GothamBold
-tl.TextSize=18; tl.TextXAlignment=Enum.TextXAlignment.Left; tl.Parent=tb
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size                 = UDim2.new(1,-90,1,0)
+titleLbl.Position             = UDim2.new(0,10,0,0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.TextColor3           = Color3.fromRGB(220,220,220)
+titleLbl.Text                 = "⚰️  Grave Builder"
+titleLbl.Font                 = Enum.Font.GothamBold
+titleLbl.TextSize             = 18
+titleLbl.TextXAlignment       = Enum.TextXAlignment.Left
+titleLbl.Parent               = titleBar
 
-local sd=Instance.new("TextLabel")
-sd.Size=UDim2.new(0,90,0,16); sd.Position=UDim2.new(1,-94,0,14)
-sd.BackgroundTransparency=1
-sd.TextColor3=syncEnabled and Color3.fromRGB(100,220,100) or Color3.fromRGB(220,80,80)
-sd.Text=syncEnabled and "● SYNC ON" or "● NO HTTP"
-sd.Font=Enum.Font.GothamBold; sd.TextSize=9
-sd.TextXAlignment=Enum.TextXAlignment.Right; sd.Parent=tb
+-- Индикатор синхронизации
+local syncDot = Instance.new("TextLabel")
+syncDot.Size                 = UDim2.new(0,80,0,16)
+syncDot.Position             = UDim2.new(1,-86,0,14)
+syncDot.BackgroundTransparency = 1
+syncDot.TextColor3           = syncEnabled
+    and Color3.fromRGB(100,220,100)
+    or  Color3.fromRGB(220,80,80)
+syncDot.Text                 = syncEnabled and "● SYNC ON" or "● NO HTTP"
+syncDot.Font                 = Enum.Font.GothamBold
+syncDot.TextSize             = 9
+syncDot.TextXAlignment       = Enum.TextXAlignment.Right
+syncDot.Parent               = titleBar
 
 if syncEnabled then
-    local t2=0
+    local dt2 = 0
     RunService.Heartbeat:Connect(function(dt)
-        t2=t2+dt; if t2>1 then t2=0 end
-        if sd and sd.Parent then sd.TextTransparency=(t2>.5) and .5 or 0 end
+        dt2 = dt2 + dt
+        if dt2 > 1 then dt2 = 0 end
+        if syncDot and syncDot.Parent then
+            syncDot.TextTransparency = (dt2 > 0.5) and 0.5 or 0
+        end
     end)
 end
 
 -- Scroll
-local scroll=Instance.new("ScrollingFrame")
-scroll.Size=UDim2.new(1,0,1,-44); scroll.Position=UDim2.new(0,0,0,44)
-scroll.BackgroundTransparency=1; scroll.BorderSizePixel=0
-scroll.ScrollBarThickness=4; scroll.ScrollBarImageColor3=Color3.fromRGB(90,90,90)
-scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.Parent=frame
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size                  = UDim2.new(1,0,1,-44)
+scroll.Position              = UDim2.new(0,0,0,44)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel        = 0
+scroll.ScrollBarThickness     = 4
+scroll.ScrollBarImageColor3   = Color3.fromRGB(90,90,90)
+scroll.CanvasSize             = UDim2.new(0,0,0,0)
+scroll.Parent                 = frame
 
-local sl=Instance.new("UIListLayout"); sl.Padding=UDim.new(0,8); sl.Parent=scroll
-local sp2=Instance.new("UIPadding")
-sp2.PaddingTop=UDim.new(0,10); sp2.PaddingLeft=UDim.new(0,10)
-sp2.PaddingRight=UDim.new(0,10); sp2.PaddingBottom=UDim.new(0,10); sp2.Parent=scroll
+local scrollLayout = Instance.new("UIListLayout")
+scrollLayout.Padding = UDim.new(0,8)
+scrollLayout.Parent  = scroll
 
-local function ac() scroll.CanvasSize=UDim2.new(0,0,0,sl.AbsoluteContentSize.Y+20) end
-sl:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(ac)
+local scrollPad = Instance.new("UIPadding")
+scrollPad.PaddingTop    = UDim.new(0,10)
+scrollPad.PaddingLeft   = UDim.new(0,10)
+scrollPad.PaddingRight  = UDim.new(0,10)
+scrollPad.PaddingBottom = UDim.new(0,10)
+scrollPad.Parent        = scroll
 
-local function sec(txt)
-    local l=Instance.new("TextLabel"); l.Size=UDim2.new(1,0,0,20)
-    l.BackgroundTransparency=1; l.TextColor3=Color3.fromRGB(140,140,140)
-    l.Text=txt; l.Font=Enum.Font.GothamBold; l.TextSize=11
-    l.TextXAlignment=Enum.TextXAlignment.Left; l.Parent=scroll; return l
+local function autoCanvas()
+    scroll.CanvasSize = UDim2.new(0,0,0, scrollLayout.AbsoluteContentSize.Y+20)
+end
+scrollLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(autoCanvas)
+
+local function makeSection(txt)
+    local l = Instance.new("TextLabel")
+    l.Size                  = UDim2.new(1,0,0,20)
+    l.BackgroundTransparency = 1
+    l.TextColor3            = Color3.fromRGB(140,140,140)
+    l.Text                  = txt
+    l.Font                  = Enum.Font.GothamBold
+    l.TextSize              = 11
+    l.TextXAlignment        = Enum.TextXAlignment.Left
+    l.Parent                = scroll
+    return l
 end
 
-local function btn(txt, bg, tc)
-    local orig=bg or Color3.fromRGB(55,55,55)
-    local b=Instance.new("TextButton")
-    b.Size=UDim2.new(1,0,0,34); b.BackgroundColor3=orig
-    b.TextColor3=tc or Color3.fromRGB(220,220,220)
-    b.Text=txt; b.Font=Enum.Font.GothamBold; b.TextSize=13
-    b.AutoButtonColor=false; b.Parent=scroll
-    addCorner(b,6); addStroke(b,Color3.fromRGB(70,70,70))
-    b.MouseEnter:Connect(function() b.BackgroundColor3=orig:Lerp(Color3.fromRGB(255,255,255),.1) end)
-    b.MouseLeave:Connect(function() b.BackgroundColor3=orig end)
-    return b
+local function makeBtn(text, bgColor, textColor)
+    local orig = bgColor or Color3.fromRGB(55,55,55)
+    local btn  = Instance.new("TextButton")
+    btn.Size             = UDim2.new(1,0,0,34)
+    btn.BackgroundColor3 = orig
+    btn.TextColor3       = textColor or Color3.fromRGB(220,220,220)
+    btn.Text             = text
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextSize         = 13
+    btn.AutoButtonColor  = false
+    btn.Parent           = scroll
+    addCorner(btn,6)
+    addStroke(btn, Color3.fromRGB(70,70,70))
+    btn.MouseEnter:Connect(function()
+        btn.BackgroundColor3 = orig:Lerp(Color3.fromRGB(255,255,255),0.1)
+    end)
+    btn.MouseLeave:Connect(function()
+        btn.BackgroundColor3 = orig
+    end)
+    return btn
 end
 
--- Игроки
-sec("👥  Игроки на сервере:")
-local pscroll=Instance.new("ScrollingFrame")
-pscroll.Size=UDim2.new(1,0,0,110); pscroll.BackgroundColor3=Color3.fromRGB(30,30,30)
-pscroll.BorderSizePixel=0; pscroll.ScrollBarThickness=3
-pscroll.ScrollBarImageColor3=Color3.fromRGB(80,80,80)
-pscroll.CanvasSize=UDim2.new(0,0,0,0); pscroll.Parent=scroll; addCorner(pscroll,6)
-local pll=Instance.new("UIListLayout"); pll.Padding=UDim.new(0,3); pll.Parent=pscroll
-local plp=Instance.new("UIPadding")
-plp.PaddingTop=UDim.new(0,4); plp.PaddingLeft=UDim.new(0,4)
-plp.PaddingRight=UDim.new(0,4); plp.Parent=pscroll
+-- ── Список игроков ─────────────────────────────
+makeSection("👥  Игроки на сервере:")
 
-local selP={}; local pBtns={}
+local playerScroll = Instance.new("ScrollingFrame")
+playerScroll.Size                  = UDim2.new(1,0,0,110)
+playerScroll.BackgroundColor3      = Color3.fromRGB(30,30,30)
+playerScroll.BorderSizePixel       = 0
+playerScroll.ScrollBarThickness    = 3
+playerScroll.ScrollBarImageColor3  = Color3.fromRGB(80,80,80)
+playerScroll.CanvasSize            = UDim2.new(0,0,0,0)
+playerScroll.Parent                = scroll
+addCorner(playerScroll,6)
 
-local ml=Instance.new("TextLabel"); ml.Size=UDim2.new(1,0,0,18)
-ml.BackgroundTransparency=1; ml.TextColor3=Color3.fromRGB(120,200,120)
-ml.Text="Выбрано: никого"; ml.Font=Enum.Font.Gotham; ml.TextSize=11
-ml.TextXAlignment=Enum.TextXAlignment.Left; ml.Parent=scroll
+local plLayout = Instance.new("UIListLayout")
+plLayout.Padding = UDim.new(0,3)
+plLayout.Parent  = playerScroll
 
-local function updML()
-    local ns={}
-    for k,v in pairs(selP) do
-        if type(k)=="userdata" then table.insert(ns,k.Name)
-        elseif type(k)=="string" and k:sub(1,10)=="__offline__" then
-            table.insert(ns,v.Name.."✍") end
-    end
-    ml.Text=#ns==0 and "Выбрано: никого" or "Выбрано ("..#ns.."): "..table.concat(ns,", ")
-end
+local plPad = Instance.new("UIPadding")
+plPad.PaddingTop   = UDim.new(0,4)
+plPad.PaddingLeft  = UDim.new(0,4)
+plPad.PaddingRight = UDim.new(0,4)
+plPad.Parent       = playerScroll
 
-local function refPL()
-    for _,b in ipairs(pBtns) do if b and b.Parent then b:Destroy() end end
-    pBtns={}
-    for _,plr in ipairs(Players:GetPlayers()) do
-        local b=Instance.new("TextButton")
-        b.Size=UDim2.new(1,-8,0,24)
-        b.BackgroundColor3=selP[plr] and Color3.fromRGB(55,95,55) or Color3.fromRGB(45,45,48)
-        b.TextColor3=Color3.fromRGB(200,200,200)
-        b.Text="  "..plr.Name; b.Font=Enum.Font.Gotham; b.TextSize=12
-        b.TextXAlignment=Enum.TextXAlignment.Left; b.AutoButtonColor=false
-        b.Parent=pscroll; addCorner(b,4)
-        b.MouseButton1Click:Connect(function()
-            selP[plr]=selP[plr] and nil or true
-            b.BackgroundColor3=selP[plr] and Color3.fromRGB(55,95,55) or Color3.fromRGB(45,45,48)
-            updML()
-        end)
-        table.insert(pBtns,b)
-    end
-    pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8)
-end
-refPL()
-pll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8) end)
+local selectedPlayers = {}
+local playerBtns      = {}
 
-local rb=btn("🔄  Обновить список",Color3.fromRGB(40,40,60))
-rb.MouseButton1Click:Connect(function() selP={}; refPL(); updML() end)
+local multiLabel = Instance.new("TextLabel")
+multiLabel.Size                  = UDim2.new(1,0,0,18)
+multiLabel.BackgroundTransparency = 1
+multiLabel.TextColor3            = Color3.fromRGB(120,200,120)
+multiLabel.Text                  = "Выбрано: никого"
+multiLabel.Font                  = Enum.Font.Gotham
+multiLabel.TextSize              = 11
+multiLabel.TextXAlignment        = Enum.TextXAlignment.Left
+multiLabel.Parent                = scroll
 
--- Ввод вручную
-sec("✍️  Имя вручную (офлайн):")
-local mi=Instance.new("TextBox")
-mi.Size=UDim2.new(1,0,0,32); mi.BackgroundColor3=Color3.fromRGB(38,38,38)
-mi.TextColor3=Color3.fromRGB(255,255,255); mi.PlaceholderText="Имя игрока..."
-mi.PlaceholderColor3=Color3.fromRGB(90,90,90); mi.Text=""
-mi.Font=Enum.Font.Gotham; mi.TextSize=13; mi.ClearTextOnFocus=false
-mi.Parent=scroll; addCorner(mi,6); addStroke(mi,Color3.fromRGB(60,60,70))
-
-local amb=btn("➕  Добавить в выбор",Color3.fromRGB(40,60,80))
-amb.MouseButton1Click:Connect(function()
-    local name=(mi.Text or ""):match("^%s*(.-)%s*$")
-    if not name or name=="" then return end
-    local onl=Players:FindFirstChild(name)
-    if onl then
-        selP[onl]=true; refPL()
-    else
-        local key="__offline__"..name
-        if not selP[key] then
-            selP[key]={Name=name,Character=nil}
-            local l2=Instance.new("TextLabel"); l2.Size=UDim2.new(1,-8,0,24)
-            l2.BackgroundColor3=Color3.fromRGB(60,50,30)
-            l2.TextColor3=Color3.fromRGB(220,200,150)
-            l2.Text="  ✍ "..name.." (офлайн)"; l2.Font=Enum.Font.Gotham
-            l2.TextSize=12; l2.TextXAlignment=Enum.TextXAlignment.Left
-            l2.Parent=pscroll; addCorner(l2,4)
-            table.insert(pBtns,l2)
-            pscroll.CanvasSize=UDim2.new(0,0,0,pll.AbsoluteContentSize.Y+8)
+local function updateMultiLabel()
+    local names = {}
+    for key, val in pairs(selectedPlayers) do
+        if type(key) == "userdata" then
+            table.insert(names, key.Name)
+        elseif type(key) == "string" and key:sub(1,10) == "__offline__" then
+            table.insert(names, val.Name .. "✍")
         end
     end
-    updML(); mi.Text=""
-end)
+    multiLabel.Text = #names == 0
+        and "Выбрано: никого"
+        or  "Выбрано (" .. #names .. "): " .. table.concat(names, ", ")
+end
 
--- Тип
-sec("🪦  Тип могилы:")
-local stNms={"RIP камень","Крест","Склеп"}
-local stCls={Color3.fromRGB(55,55,85),Color3.fromRGB(75,45,45),Color3.fromRGB(45,65,45)}
-local stIdx=1
-local stb=btn("▶  "..stNms[1],stCls[1])
-stb.MouseButton1Click:Connect(function()
-    stIdx=stIdx%#stNms+1; stb.Text="▶  "..stNms[stIdx]; stb.BackgroundColor3=stCls[stIdx] end)
-
--- Режим
-sec("♻️  Режим размещения:")
-local repMode=false
-local repBtn=btn("▶  Добавить рядом",Color3.fromRGB(50,50,50))
-repBtn.MouseButton1Click:Connect(function()
-    repMode=not repMode
-    repBtn.Text=repMode and "▶  Заменить существующие" or "▶  Добавить рядом"
-    repBtn.BackgroundColor3=repMode and Color3.fromRGB(90,50,20) or Color3.fromRGB(50,50,50)
-end)
-
--- Действия
-sec("⚙️  Действия:")
-
-local function getPL()
-    local lst={}
-    for k,v in pairs(selP) do
-        if type(k)=="userdata" then table.insert(lst,k)
-        elseif type(k)=="string" and k:sub(1,10)=="__offline__" then table.insert(lst,v) end
+local function refreshPlayerList()
+    for _, b in ipairs(playerBtns) do
+        if b and b.Parent then b:Destroy() end
     end
-    if #lst==0 then table.insert(lst,LocalPlayer) end
-    return lst
+    playerBtns = {}
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local btn = Instance.new("TextButton")
+        btn.Size             = UDim2.new(1,-8,0,24)
+        btn.BackgroundColor3 = selectedPlayers[plr]
+            and Color3.fromRGB(55,95,55) or Color3.fromRGB(45,45,48)
+        btn.TextColor3       = Color3.fromRGB(200,200,200)
+        btn.Text             = "  " .. plr.Name
+        btn.Font             = Enum.Font.Gotham
+        btn.TextSize         = 12
+        btn.TextXAlignment   = Enum.TextXAlignment.Left
+        btn.AutoButtonColor  = false
+        btn.Parent           = playerScroll
+        addCorner(btn,4)
+
+        btn.MouseButton1Click:Connect(function()
+            if selectedPlayers[plr] then
+                selectedPlayers[plr] = nil
+                btn.BackgroundColor3 = Color3.fromRGB(45,45,48)
+            else
+                selectedPlayers[plr] = true
+                btn.BackgroundColor3 = Color3.fromRGB(55,95,55)
+            end
+            updateMultiLabel()
+        end)
+        table.insert(playerBtns, btn)
+    end
+
+    playerScroll.CanvasSize = UDim2.new(0,0,0, plLayout.AbsoluteContentSize.Y+8)
 end
 
-local function footPos()
-    local c=LocalPlayer.Character; if not c then return Vector3.new(0,0,0) end
-    local h=c:FindFirstChild("HumanoidRootPart"); if not h then return Vector3.new(0,0,0) end
-    return Vector3.new(h.Position.X,h.Position.Y-3,h.Position.Z)
-end
-
-local function bye()
-    screenGui:Destroy(); pcall(function() script:Destroy() end) end
-
--- Одиночная
-local b1=btn("⚰️  Построить могилу",Color3.fromRGB(55,130,55))
-b1.MouseButton1Click:Connect(function()
-    if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-    local fp=footPos(); local sk=({"rip","cross","crypt"})[stIdx]
-    local pl=getPL(); local tp=pl[1]; local pn=tp and tp.Name or LocalPlayer.Name
-    local payload={id=genId(),graveType=sk=="crypt" and "crypt" or "grave",
-        origin=v3t(fp),playerName=pn,style=sk,owner=myClientId,timestamp=os.time()}
-    local mdl
-    if sk=="crypt" then mdl=buildCrypt(fp,pn,tp) else mdl=buildGrave(fp,sk,pn,tp) end
-    builtModels[payload.id]=mdl
-    syncBuild(payload)
-    bye()
+refreshPlayerList()
+plLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    playerScroll.CanvasSize = UDim2.new(0,0,0, plLayout.AbsoluteContentSize.Y+8)
 end)
 
--- Кладбище
-local b2=btn("🏚️  Кладбище + Часовня",Color3.fromRGB(100,65,30))
-b2.MouseButton1Click:Connect(function()
-    if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-    local fp=footPos(); local pl=getPL()
-    local ns={}; for _,p in ipairs(pl) do table.insert(ns,p.Name) end
-    buildCemetery(fp,pl)
-    local payload={id=genId(),graveType="cemetery",origin=v3t(fp),
-        playerName=LocalPlayer.Name,playerNames=ns,owner=myClientId,timestamp=os.time()}
-    builtModels[payload.id]=true
+local refreshBtn = makeBtn("🔄  Обновить список", Color3.fromRGB(40,40,60))
+refreshBtn.MouseButton1Click:Connect(function()
+    selectedPlayers = {}
+    refreshPlayerList()
+    updateMultiLabel()
+end)
+
+-- ── Ввод вручную ───────────────────────────────
+makeSection("✍️  Имя вручную (офлайн):")
+
+local manualInput = Instance.new("TextBox")
+manualInput.Size              = UDim2.new(1,0,0,32)
+manualInput.BackgroundColor3  = Color3.fromRGB(38,38,38)
+manualInput.TextColor3        = Color3.fromRGB(255,255,255)
+manualInput.PlaceholderText   = "Имя игрока..."
+manualInput.PlaceholderColor3 = Color3.fromRGB(90,90,90)
+manualInput.Text              = ""
+manualInput.Font              = Enum.Font.Gotham
+manualInput.TextSize          = 13
+manualInput.ClearTextOnFocus  = false
+manualInput.Parent            = scroll
+addCorner(manualInput,6)
+addStroke(manualInput, Color3.fromRGB(60,60,70))
+
+local addManualBtn = makeBtn("➕  Добавить в выбор", Color3.fromRGB(40,60,80))
+addManualBtn.MouseButton1Click:Connect(function()
+    local name = (manualInput.Text or ""):match("^%s*(.-)%s*$")
+    if not name or name == "" then return end
+
+    local online = Players:FindFirstChild(name)
+    if online then
+        selectedPlayers[online] = true
+        refreshPlayerList()
+    else
+        local key = "__offline__" .. name
+        if not selectedPlayers[key] then
+            selectedPlayers[key] = {Name=name, Character=nil}
+            local lbl2 = Instance.new("TextLabel")
+            lbl2.Size             = UDim2.new(1,-8,0,24)
+            lbl2.BackgroundColor3 = Color3.fromRGB(60,50,30)
+            lbl2.TextColor3       = Color3.fromRGB(220,200,150)
+            lbl2.Text             = "  ✍ " .. name .. " (офлайн)"
+            lbl2.Font             = Enum.Font.Gotham
+            lbl2.TextSize         = 12
+            lbl2.TextXAlignment   = Enum.TextXAlignment.Left
+            lbl2.Parent           = playerScroll
+            addCorner(lbl2,4)
+            table.insert(playerBtns, lbl2)
+            playerScroll.CanvasSize = UDim2.new(0,0,0, plLayout.AbsoluteContentSize.Y+8)
+        end
+    end
+    updateMultiLabel()
+    manualInput.Text = ""
+end)
+
+-- ── Тип могилы ─────────────────────────────────
+makeSection("🪦  Тип могилы:")
+
+local styles      = {"RIP камень","Крест","Склеп"}
+local styleColors = {
+    Color3.fromRGB(55,55,85),
+    Color3.fromRGB(75,45,45),
+    Color3.fromRGB(45,65,45),
+}
+local currentStyleIndex = 1
+
+local styleBtn = makeBtn("▶  " .. styles[1], styleColors[1])
+styleBtn.MouseButton1Click:Connect(function()
+    currentStyleIndex = (currentStyleIndex % #styles) + 1
+    styleBtn.Text             = "▶  " .. styles[currentStyleIndex]
+    styleBtn.BackgroundColor3 = styleColors[currentStyleIndex]
+end)
+
+-- ── Режим размещения ───────────────────────────
+makeSection("♻️  Режим размещения:")
+
+local replaceMode    = false
+local replaceModeBtn = makeBtn("▶  Добавить рядом", Color3.fromRGB(50,50,50))
+replaceModeBtn.MouseButton1Click:Connect(function()
+    replaceMode = not replaceMode
+    replaceModeBtn.Text             = replaceMode
+        and "▶  Заменить существующие"
+        or  "▶  Добавить рядом"
+    replaceModeBtn.BackgroundColor3 = replaceMode
+        and Color3.fromRGB(90,50,20)
+        or  Color3.fromRGB(50,50,50)
+end)
+
+-- ── Действия ───────────────────────────────────
+makeSection("⚙️  Действия:")
+
+local function getPlayersList()
+    local list = {}
+    for key, val in pairs(selectedPlayers) do
+        if type(key) == "userdata" then
+            table.insert(list, key)
+        elseif type(key) == "string" and key:sub(1,10) == "__offline__" then
+            table.insert(list, val)
+        end
+    end
+    if #list == 0 then table.insert(list, LocalPlayer) end
+    return list
+end
+
+local function getFootPos()
+    local char = LocalPlayer.Character
+    if not char then return Vector3.new(0,0,0) end
+    local hrp  = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return Vector3.new(0,0,0) end
+    return Vector3.new(hrp.Position.X, hrp.Position.Y-3, hrp.Position.Z)
+end
+
+local function doCleanup()
+    screenGui:Destroy()
+    pcall(function() script:Destroy() end)
+end
+
+-- Одиночная могила
+local buildSingleBtn = makeBtn("⚰️  Построить могилу", Color3.fromRGB(55,130,55))
+buildSingleBtn.MouseButton1Click:Connect(function()
+    if replaceMode then removeExistingGraves(); syncRemoveAll(); builtModels={} end
+
+    local footPos  = getFootPos()
+    local styleKey = ({"rip","cross","crypt"})[currentStyleIndex]
+    local list     = getPlayersList()
+    local tp       = list[1]
+    local pName    = tp and tp.Name or LocalPlayer.Name
+
+    local payload = {
+        id        = generateId(),
+        graveType = (styleKey=="crypt") and "crypt" or "grave",
+        origin    = v3t(footPos),
+        playerName = pName,
+        style     = styleKey,
+        owner     = myClientId,
+        timestamp = os.time(),
+    }
+
+    local model
+    if styleKey == "crypt" then
+        model = buildCrypt(footPos, pName, tp)
+    else
+        model = buildGraveModel(footPos, styleKey, pName, tp)
+    end
+    builtModels[payload.id] = model
     syncBuild(payload)
-    bye()
+    doCleanup()
+end)
+
+-- Кладбище + часовня
+local buildCemeteryBtn = makeBtn("🏚️  Кладбище + Часовня", Color3.fromRGB(100,65,30))
+buildCemeteryBtn.MouseButton1Click:Connect(function()
+    if replaceMode then removeExistingGraves(); syncRemoveAll(); builtModels={} end
+
+    local footPos = getFootPos()
+    local list    = getPlayersList()
+    local names   = {}
+    for _, p in ipairs(list) do table.insert(names, p.Name) end
+
+    buildCemetery(footPos, list)
+
+    local payload = {
+        id          = generateId(),
+        graveType   = "cemetery",
+        origin      = v3t(footPos),
+        playerName  = LocalPlayer.Name,
+        playerNames = names,
+        owner       = myClientId,
+        timestamp   = os.time(),
+    }
+    builtModels[payload.id] = true
+    syncBuild(payload)
+    doCleanup()
 end)
 
 -- Склеп
-local b3=btn("🏛️  Построить склеп",Color3.fromRGB(40,60,80))
-b3.MouseButton1Click:Connect(function()
-    if repMode then clearGraves(); syncRemoveAll(); builtModels={} end
-    local fp=footPos(); local pl=getPL(); local tp=pl[1]
-    local pn=tp and tp.Name or LocalPlayer.Name
-    local payload={id=genId(),graveType="crypt",origin=v3t(fp),
-        playerName=pn,style="crypt",owner=myClientId,timestamp=os.time()}
-    builtModels[payload.id]=buildCrypt(fp,pn,tp)
+local buildCryptBtn = makeBtn("🏛️  Построить склеп", Color3.fromRGB(40,60,80))
+buildCryptBtn.MouseButton1Click:Connect(function()
+    if replaceMode then removeExistingGraves(); syncRemoveAll(); builtModels={} end
+
+    local footPos = getFootPos()
+    local list    = getPlayersList()
+    local tp      = list[1]
+    local pName   = tp and tp.Name or LocalPlayer.Name
+
+    local payload = {
+        id        = generateId(),
+        graveType = "crypt",
+        origin    = v3t(footPos),
+        playerName = pName,
+        style     = "crypt",
+        owner     = myClientId,
+        timestamp = os.time(),
+    }
+    local model = buildCrypt(footPos, pName, tp)
+    builtModels[payload.id] = model
     syncBuild(payload)
-    bye()
+    doCleanup()
 end)
 
--- Удалить
-local b4=btn("🗑️  Удалить все могилы",Color3.fromRGB(80,25,25))
-b4.MouseButton1Click:Connect(function()
-    clearGraves(); syncRemoveAll(); builtModels={} end)
+-- Удалить всё
+local clearBtn = makeBtn("🗑️  Удалить все могилы", Color3.fromRGB(80,25,25))
+clearBtn.MouseButton1Click:Connect(function()
+    removeExistingGraves()
+    syncRemoveAll()
+    builtModels = {}
+end)
 
 -- Закрыть
-local b5=btn("✖  Закрыть",Color3.fromRGB(40,40,40),Color3.fromRGB(180,180,180))
-b5.MouseButton1Click:Connect(bye)
+local closeBtn = makeBtn("✖  Закрыть", Color3.fromRGB(40,40,40), Color3.fromRGB(180,180,180))
+closeBtn.MouseButton1Click:Connect(function()
+    doCleanup()
+end)
 
-ac()
-print("[GraveBuilder] ✓ Готов | ClientId: "..myClientId)
-print("[GraveSync] Interval: "..POLL_INTERVAL.."s | HTTP: "..tostring(syncEnabled))
+autoCanvas()
+print("[GraveBuilder] ✓ Готов. ClientId: " .. myClientId)
+print("[GraveBuilder] Synapse X: syn.request = " .. tostring(syncEnabled))
