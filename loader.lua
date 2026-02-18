@@ -1,77 +1,36 @@
 --[[
-    ╔══════════════════════════════════════════════════╗
-    ║        TELEPORT CONTROL PANEL v2.0               ║
-    ║        LOADER WITH LOADING SCREEN                ║
-    ║        FINAL FIXED VERSION                       ║
-    ╚══════════════════════════════════════════════════╝
+    TELEPORT CONTROL PANEL v2.1
+    LOADER — FINAL
 ]]
 
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
+if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(1)
 
--- ============================================
--- ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
--- ============================================
---[[
-    Логика:
-    1. Если СЕЙЧАС идёт загрузка → заблокировать
-    2. Если скрипт УЖЕ работает (GUI существует) → заблокировать
-    3. Если был закрыт кнопкой Close → РАЗРЕШИТЬ перезапуск
-]]
-
--- Блок: уже грузится прямо сейчас
 if shared._TCP_LOADING == true then
-    warn("⚠️ TCP is already loading! Please wait.")
+    warn("⚠️ TCP is already loading!")
     return
 end
 
--- Блок: уже запущен и GUI существует
 if shared.TCP and shared.TCP.Loaded == true then
-    -- Проверяем РЕАЛЬНО ли GUI ещё жив
     local CoreGui = game:GetService("CoreGui")
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
-    
-    local guiAlive = false
-    
-    -- Проверка в CoreGui
-    if CoreGui:FindFirstChild("TCP_VapeStyle") then
-        guiAlive = true
-    end
-    -- Проверка в PlayerGui
-    if player and player:FindFirstChild("PlayerGui") then
-        if player.PlayerGui:FindFirstChild("TCP_VapeStyle") then
-            guiAlive = true
-        end
-    end
-    
+    local player = game:GetService("Players").LocalPlayer
+    local guiAlive = CoreGui:FindFirstChild("TCP_VapeStyle")
+        or (player:FindFirstChild("PlayerGui") and player.PlayerGui:FindFirstChild("TCP_VapeStyle"))
     if guiAlive then
-        warn("⚠️ TCP is already running! Close it first (✕ button) to restart.")
+        warn("⚠️ TCP is already running!")
         return
     else
-        -- GUI мёртв → был закрыт → разрешаем перезапуск
         shared.TCP = nil
     end
 end
 
--- Ставим флаг загрузки
 shared._TCP_LOADING = true
 
--- ============================================
--- СЕРВИСЫ
--- ============================================
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
-local RunService = game:GetService("RunService")
-
 local player = Players.LocalPlayer
 
--- ============================================
--- КОНФИГ ЛОАДЕРА
--- ============================================
 local REPO = "Flamedragonz/RobloxUniversal"
 local MAX_RETRIES = 3
 local DELAY_BETWEEN = 1.5
@@ -87,736 +46,213 @@ local SUCCESS = Color3.fromRGB(80, 200, 120)
 local DANGER = Color3.fromRGB(220, 70, 70)
 local WARNING = Color3.fromRGB(240, 180, 60)
 
--- ============================================
--- ФУНКЦИЯ ПОЛНОЙ ОЧИСТКИ
--- ============================================
 local function fullCleanup()
     shared._TCP_LOADING = nil
-    
     if shared.TCP then
-        -- Отключить все connections
         if shared.TCP.Modules and shared.TCP.Modules.State then
-            local State = shared.TCP.Modules.State
-            if State.Connections then
-                for name, conn in pairs(State.Connections) do
-                    pcall(function() conn:Disconnect() end)
-                end
-            end
-            -- Убрать SelectionBox
-            if State.SelectionBox then
-                pcall(function() State.SelectionBox:Destroy() end)
-            end
+            local S = shared.TCP.Modules.State
+            if S.Connections then for _,c in pairs(S.Connections) do pcall(function() c:Disconnect() end) end end
+            if S.SelectionBox then pcall(function() S.SelectionBox:Destroy() end) end
         end
         shared.TCP = nil
     end
-    
-    -- Убрать GUI
-    pcall(function()
-        local g = CoreGui:FindFirstChild("TCP_VapeStyle")
-        if g then g:Destroy() end
-    end)
-    pcall(function()
-        local g = CoreGui:FindFirstChild("TCP_LoadingScreen")
-        if g then g:Destroy() end
-    end)
-    pcall(function()
-        if player:FindFirstChild("PlayerGui") then
-            local g = player.PlayerGui:FindFirstChild("TCP_VapeStyle")
-            if g then g:Destroy() end
-            local g2 = player.PlayerGui:FindFirstChild("TCP_LoadingScreen")
-            if g2 then g2:Destroy() end
-        end
-    end)
+    pcall(function() local g = CoreGui:FindFirstChild("TCP_VapeStyle") if g then g:Destroy() end end)
+    pcall(function() local g = CoreGui:FindFirstChild("TCP_LoadingScreen") if g then g:Destroy() end end)
 end
 
--- ============================================
--- LOADING SCREEN UI
--- ============================================
-local LoadingScreen = {}
+-- ===== LOADING SCREEN =====
+local LS = {}
+LS._alive = true
 
-function LoadingScreen.Create()
-    -- Удалить старый если есть
-    pcall(function()
-        local old = CoreGui:FindFirstChild("TCP_LoadingScreen")
-        if old then old:Destroy() end
-    end)
-    pcall(function()
-        if player:FindFirstChild("PlayerGui") then
-            local old = player.PlayerGui:FindFirstChild("TCP_LoadingScreen")
-            if old then old:Destroy() end
-        end
-    end)
-
+function LS.Create()
+    pcall(function() local o = CoreGui:FindFirstChild("TCP_LoadingScreen") if o then o:Destroy() end end)
     local gui = Instance.new("ScreenGui")
-    gui.Name = "TCP_LoadingScreen"
-    gui.ResetOnSpawn = false
-    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.DisplayOrder = 9999
-    
-    -- ╔══════════════════════════════════════╗
-    -- ║  FIX #1: IgnoreGuiInset = true       ║
-    -- ║  Без этого overlay сдвигается вниз   ║
-    -- ║  на 36px (высота TopBar) и сверху    ║
-    -- ║  остаётся незакрытая полоска          ║
-    -- ╚══════════════════════════════════════╝
-    gui.IgnoreGuiInset = true
-    
-    local ok = pcall(function() gui.Parent = CoreGui end)
-    if not ok then gui.Parent = player.PlayerGui end
+    gui.Name = "TCP_LoadingScreen"; gui.ResetOnSpawn = false; gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 9999; gui.IgnoreGuiInset = true
+    pcall(function() gui.Parent = CoreGui end) or pcall(function() gui.Parent = player.PlayerGui end)
 
-    -- ===== ПОЛНОЭКРАННЫЙ ФОН =====
-    local overlay = Instance.new("Frame")
-    overlay.Name = "Overlay"
-    overlay.Size = UDim2.new(1, 0, 1, 0)
-    overlay.Position = UDim2.new(0, 0, 0, 0)
-    overlay.AnchorPoint = Vector2.new(0, 0)
-    overlay.BackgroundColor3 = Color3.new(0, 0, 0)
-    overlay.BackgroundTransparency = 0.4
-    overlay.BorderSizePixel = 0
-    overlay.ZIndex = 1
-    overlay.Parent = gui
+    local overlay = Instance.new("Frame"); overlay.Size = UDim2.new(1,0,1,0); overlay.BackgroundColor3 = Color3.new(0,0,0)
+    overlay.BackgroundTransparency = 1; overlay.BorderSizePixel = 0; overlay.ZIndex = 1; overlay.Parent = gui
 
-    -- ===== ЦЕНТРАЛЬНАЯ КАРТОЧКА =====
-    local card = Instance.new("Frame")
-    card.Name = "Card"
-    card.AnchorPoint = Vector2.new(0.5, 0.5)
-    card.Size = UDim2.new(0, 380, 0, 320)
-    card.Position = UDim2.new(0.5, 0, 0.5, 0)
-    card.BackgroundColor3 = BG_DARK
-    card.BorderSizePixel = 0
-    card.ZIndex = 10
-    card.Parent = gui
+    local card = Instance.new("Frame"); card.Name = "Card"; card.AnchorPoint = Vector2.new(0.5,0.5)
+    card.Size = UDim2.new(0,380,0,0); card.Position = UDim2.new(0.5,0,0.5,0); card.BackgroundColor3 = BG_DARK
+    card.BackgroundTransparency = 1; card.BorderSizePixel = 0; card.ZIndex = 10; card.Parent = gui
+    local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0,16); cc.Parent = card
+    local cs = Instance.new("UIStroke"); cs.Color = ACCENT; cs.Thickness = 1.5; cs.Transparency = 0.5; cs.Parent = card
 
-    local cardCorner = Instance.new("UICorner")
-    cardCorner.CornerRadius = UDim.new(0, 16)
-    cardCorner.Parent = card
-
-    local cardStroke = Instance.new("UIStroke")
-    cardStroke.Color = ACCENT
-    cardStroke.Thickness = 1.5
-    cardStroke.Transparency = 0.5
-    cardStroke.Parent = card
-
-    -- Тень
-    local shadow = Instance.new("ImageLabel")
-    shadow.Name = "Shadow"
-    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-    shadow.BackgroundTransparency = 1
-    shadow.Position = UDim2.new(0.5, 0, 0.5, 6)
-    shadow.Size = UDim2.new(1, 50, 1, 50)
-    shadow.ZIndex = 9
-    shadow.Image = "rbxassetid://6015897843"
-    shadow.ImageColor3 = Color3.new(0, 0, 0)
-    shadow.ImageTransparency = 0.3
-    shadow.ScaleType = Enum.ScaleType.Slice
-    shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+    local shadow = Instance.new("ImageLabel"); shadow.Name="Shadow"; shadow.AnchorPoint=Vector2.new(0.5,0.5)
+    shadow.BackgroundTransparency=1; shadow.Position=UDim2.new(0.5,0,0.5,6); shadow.Size=UDim2.new(1,50,1,50)
+    shadow.ZIndex=9; shadow.Image="rbxassetid://6015897843"; shadow.ImageColor3=Color3.new(0,0,0)
+    shadow.ImageTransparency=0.3; shadow.ScaleType=Enum.ScaleType.Slice; shadow.SliceCenter=Rect.new(49,49,450,450)
     shadow.Parent = card
 
-    -- ===== ЛОГОТИП =====
-    local logoContainer = Instance.new("Frame")
-    logoContainer.AnchorPoint = Vector2.new(0.5, 0)
-    logoContainer.Size = UDim2.new(0, 60, 0, 60)
-    logoContainer.Position = UDim2.new(0.5, 0, 0, 30)
-    logoContainer.BackgroundColor3 = ACCENT
-    logoContainer.ZIndex = 11
-    logoContainer.Parent = card
+    local logoCont = Instance.new("Frame"); logoCont.AnchorPoint=Vector2.new(0.5,0); logoCont.Size=UDim2.new(0,60,0,60)
+    logoCont.Position=UDim2.new(0.5,0,0,30); logoCont.BackgroundColor3=ACCENT; logoCont.ZIndex=11; logoCont.Parent=card
+    Instance.new("UICorner",logoCont).CornerRadius=UDim.new(0,14)
+    local lg = Instance.new("UIGradient"); lg.Color=ColorSequence.new(ACCENT,ACCENT_GLOW); lg.Rotation=45; lg.Parent=logoCont
+    local lt = Instance.new("TextLabel"); lt.Size=UDim2.new(1,0,1,0); lt.BackgroundTransparency=1; lt.Text="T"
+    lt.TextColor3=Color3.new(1,1,1); lt.Font=Enum.Font.GothamBlack; lt.TextSize=30; lt.ZIndex=12; lt.Parent=logoCont
+    local gr = Instance.new("UIStroke"); gr.Color=ACCENT_GLOW; gr.Thickness=2; gr.Parent=logoCont
 
-    local logoCorner = Instance.new("UICorner")
-    logoCorner.CornerRadius = UDim.new(0, 14)
-    logoCorner.Parent = logoContainer
+    local ttl = Instance.new("TextLabel"); ttl.AnchorPoint=Vector2.new(0.5,0); ttl.Size=UDim2.new(1,0,0,24)
+    ttl.Position=UDim2.new(0.5,0,0,100); ttl.BackgroundTransparency=1; ttl.Text="Teleport Control Panel"
+    ttl.TextColor3=TEXT_PRIMARY; ttl.Font=Enum.Font.GothamBlack; ttl.TextSize=20; ttl.ZIndex=11; ttl.Parent=card
 
-    local logoGradient = Instance.new("UIGradient")
-    logoGradient.Color = ColorSequence.new(ACCENT, ACCENT_GLOW)
-    logoGradient.Rotation = 45
-    logoGradient.Parent = logoContainer
+    local vl = Instance.new("TextLabel"); vl.AnchorPoint=Vector2.new(0.5,0); vl.Size=UDim2.new(1,0,0,16)
+    vl.Position=UDim2.new(0.5,0,0,126); vl.BackgroundTransparency=1; vl.Text="v2.1 — Vape Style Edition"
+    vl.TextColor3=TEXT_SECONDARY; vl.Font=Enum.Font.GothamMedium; vl.TextSize=12; vl.ZIndex=11; vl.Parent=card
 
-    local logoText = Instance.new("TextLabel")
-    logoText.Size = UDim2.new(1, 0, 1, 0)
-    logoText.BackgroundTransparency = 1
-    logoText.Text = "T"
-    logoText.TextColor3 = Color3.new(1, 1, 1)
-    logoText.Font = Enum.Font.GothamBlack
-    logoText.TextSize = 30
-    logoText.ZIndex = 12
-    logoText.Parent = logoContainer
+    local pbg = Instance.new("Frame"); pbg.AnchorPoint=Vector2.new(0.5,0); pbg.Size=UDim2.new(0.8,0,0,8)
+    pbg.Position=UDim2.new(0.5,0,0,165); pbg.BackgroundColor3=BG_SURFACE; pbg.BorderSizePixel=0; pbg.ZIndex=11; pbg.Parent=card
+    Instance.new("UICorner",pbg).CornerRadius=UDim.new(0,4)
+    local pf = Instance.new("Frame"); pf.Name="Fill"; pf.Size=UDim2.new(0,0,1,0); pf.BackgroundColor3=ACCENT
+    pf.BorderSizePixel=0; pf.ZIndex=12; pf.Parent=pbg; Instance.new("UICorner",pf).CornerRadius=UDim.new(0,4)
 
-    -- Пульсирующая обводка лого
-    local glowRing = Instance.new("UIStroke")
-    glowRing.Color = ACCENT_GLOW
-    glowRing.Thickness = 2
-    glowRing.Transparency = 0
-    glowRing.Parent = logoContainer
+    local pct = Instance.new("TextLabel"); pct.AnchorPoint=Vector2.new(0.5,0); pct.Size=UDim2.new(1,0,0,20)
+    pct.Position=UDim2.new(0.5,0,0,178); pct.BackgroundTransparency=1; pct.Text="0%"; pct.TextColor3=ACCENT_GLOW
+    pct.Font=Enum.Font.GothamBold; pct.TextSize=14; pct.ZIndex=11; pct.Parent=card
 
-    -- ===== ЗАГОЛОВОК =====
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.AnchorPoint = Vector2.new(0.5, 0)
-    titleLabel.Size = UDim2.new(1, 0, 0, 24)
-    titleLabel.Position = UDim2.new(0.5, 0, 0, 100)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "Teleport Control Panel"
-    titleLabel.TextColor3 = TEXT_PRIMARY
-    titleLabel.Font = Enum.Font.GothamBlack
-    titleLabel.TextSize = 20
-    titleLabel.ZIndex = 11
-    titleLabel.Parent = card
+    local stl = Instance.new("TextLabel"); stl.AnchorPoint=Vector2.new(0.5,0); stl.Size=UDim2.new(0.9,0,0,18)
+    stl.Position=UDim2.new(0.5,0,0,205); stl.BackgroundTransparency=1; stl.Text="Initializing..."
+    stl.TextColor3=TEXT_SECONDARY; stl.Font=Enum.Font.GothamMedium; stl.TextSize=13; stl.ZIndex=11; stl.Parent=card
 
-    local versionLabel = Instance.new("TextLabel")
-    versionLabel.AnchorPoint = Vector2.new(0.5, 0)
-    versionLabel.Size = UDim2.new(1, 0, 0, 16)
-    versionLabel.Position = UDim2.new(0.5, 0, 0, 126)
-    versionLabel.BackgroundTransparency = 1
-    versionLabel.Text = "v2.0 — Vape Style Edition"
-    versionLabel.TextColor3 = TEXT_SECONDARY
-    versionLabel.Font = Enum.Font.GothamMedium
-    versionLabel.TextSize = 12
-    versionLabel.ZIndex = 11
-    versionLabel.Parent = card
+    local lf = Instance.new("Frame"); lf.AnchorPoint=Vector2.new(0.5,0); lf.Size=UDim2.new(0.85,0,0,70)
+    lf.Position=UDim2.new(0.5,0,0,232); lf.BackgroundColor3=BG_SURFACE; lf.BorderSizePixel=0; lf.ClipsDescendants=true
+    lf.ZIndex=11; lf.Parent=card; Instance.new("UICorner",lf).CornerRadius=UDim.new(0,8)
+    local ll = Instance.new("UIListLayout"); ll.SortOrder=Enum.SortOrder.LayoutOrder; ll.Padding=UDim.new(0,2)
+    ll.VerticalAlignment=Enum.VerticalAlignment.Bottom; ll.Parent=lf
+    local lp = Instance.new("UIPadding"); lp.PaddingLeft=UDim.new(0,8); lp.PaddingRight=UDim.new(0,8)
+    lp.PaddingBottom=UDim.new(0,4); lp.Parent=lf
 
-    -- ===== PROGRESS BAR =====
-    local progressBg = Instance.new("Frame")
-    progressBg.AnchorPoint = Vector2.new(0.5, 0)
-    progressBg.Size = UDim2.new(0.8, 0, 0, 8)
-    progressBg.Position = UDim2.new(0.5, 0, 0, 165)
-    progressBg.BackgroundColor3 = BG_SURFACE
-    progressBg.BorderSizePixel = 0
-    progressBg.ZIndex = 11
-    progressBg.Parent = card
+    TweenService:Create(overlay,TweenInfo.new(0.5),{BackgroundTransparency=0.4}):Play()
+    TweenService:Create(card,TweenInfo.new(0.5,Enum.EasingStyle.Back),{BackgroundTransparency=0,Size=UDim2.new(0,380,0,320)}):Play()
 
-    local progressBgCorner = Instance.new("UICorner")
-    progressBgCorner.CornerRadius = UDim.new(0, 4)
-    progressBgCorner.Parent = progressBg
+    task.spawn(function() while LS._alive do
+        TweenService:Create(gr,TweenInfo.new(1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{Transparency=0.7}):Play()
+        task.wait(1); if not LS._alive then break end
+        TweenService:Create(gr,TweenInfo.new(1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{Transparency=0}):Play()
+        task.wait(1)
+    end end)
 
-    local progressFill = Instance.new("Frame")
-    progressFill.Name = "Fill"
-    progressFill.Size = UDim2.new(0, 0, 1, 0)
-    progressFill.BackgroundColor3 = ACCENT
-    progressFill.BorderSizePixel = 0
-    progressFill.ZIndex = 12
-    progressFill.Parent = progressBg
-
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(0, 4)
-    fillCorner.Parent = progressFill
-
-    local fillGradient = Instance.new("UIGradient")
-    fillGradient.Color = ColorSequence.new(ACCENT, ACCENT_GLOW)
-    fillGradient.Rotation = 0
-    fillGradient.Parent = progressFill
-
-    -- ===== ПРОЦЕНТ =====
-    local percentLabel = Instance.new("TextLabel")
-    percentLabel.AnchorPoint = Vector2.new(0.5, 0)
-    percentLabel.Size = UDim2.new(1, 0, 0, 20)
-    percentLabel.Position = UDim2.new(0.5, 0, 0, 178)
-    percentLabel.BackgroundTransparency = 1
-    percentLabel.Text = "0%"
-    percentLabel.TextColor3 = ACCENT_GLOW
-    percentLabel.Font = Enum.Font.GothamBold
-    percentLabel.TextSize = 14
-    percentLabel.ZIndex = 11
-    percentLabel.Parent = card
-
-    -- ===== СТАТУС =====
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.AnchorPoint = Vector2.new(0.5, 0)
-    statusLabel.Size = UDim2.new(0.9, 0, 0, 18)
-    statusLabel.Position = UDim2.new(0.5, 0, 0, 205)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "Initializing..."
-    statusLabel.TextColor3 = TEXT_SECONDARY
-    statusLabel.Font = Enum.Font.GothamMedium
-    statusLabel.TextSize = 13
-    statusLabel.ZIndex = 11
-    statusLabel.Parent = card
-
-    -- ===== ЛОГ =====
-    local logFrame = Instance.new("Frame")
-    logFrame.AnchorPoint = Vector2.new(0.5, 0)
-    logFrame.Size = UDim2.new(0.85, 0, 0, 70)
-    logFrame.Position = UDim2.new(0.5, 0, 0, 232)
-    logFrame.BackgroundColor3 = BG_SURFACE
-    logFrame.BorderSizePixel = 0
-    logFrame.ClipsDescendants = true
-    logFrame.ZIndex = 11
-    logFrame.Parent = card
-
-    local logCorner = Instance.new("UICorner")
-    logCorner.CornerRadius = UDim.new(0, 8)
-    logCorner.Parent = logFrame
-
-    local logLayout = Instance.new("UIListLayout")
-    logLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    logLayout.Padding = UDim.new(0, 2)
-    logLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
-    logLayout.Parent = logFrame
-
-    local logPadding = Instance.new("UIPadding")
-    logPadding.PaddingLeft = UDim.new(0, 8)
-    logPadding.PaddingRight = UDim.new(0, 8)
-    logPadding.PaddingBottom = UDim.new(0, 4)
-    logPadding.Parent = logFrame
-
-    -- ===== АНИМАЦИИ =====
-
-    -- Появление
-    card.BackgroundTransparency = 1
-    card.Size = UDim2.new(0, 380, 0, 0)
-    overlay.BackgroundTransparency = 1
-
-    TweenService:Create(overlay, TweenInfo.new(0.5), {
-        BackgroundTransparency = 0.4
-    }):Play()
-
-    TweenService:Create(card, TweenInfo.new(0.5, Enum.EasingStyle.Back), {
-        BackgroundTransparency = 0,
-        Size = UDim2.new(0, 380, 0, 320)
-    }):Play()
-
-    -- Пульсация лого
-    LoadingScreen._pulseAlive = true
-    task.spawn(function()
-        while LoadingScreen._pulseAlive do
-            TweenService:Create(glowRing, TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-                Transparency = 0.7
-            }):Play()
-            task.wait(1)
-            if not LoadingScreen._pulseAlive then break end
-            TweenService:Create(glowRing, TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-                Transparency = 0
-            }):Play()
-            task.wait(1)
-        end
-    end)
-
-    -- Градиент бежит по прогресс-бару
-    LoadingScreen._gradientAlive = true
-    task.spawn(function()
-        while LoadingScreen._gradientAlive do
-            fillGradient.Offset = Vector2.new(-1, 0)
-            TweenService:Create(fillGradient, TweenInfo.new(2, Enum.EasingStyle.Linear), {
-                Offset = Vector2.new(1, 0)
-            }):Play()
-            task.wait(2)
-        end
-    end)
-
-    -- ===== ХРАНИЛИЩЕ =====
-    LoadingScreen.GUI = gui
-    LoadingScreen.Card = card
-    LoadingScreen.Overlay = overlay
-    LoadingScreen.ProgressFill = progressFill
-    LoadingScreen.PercentLabel = percentLabel
-    LoadingScreen.StatusLabel = statusLabel
-    LoadingScreen.LogFrame = logFrame
-    LoadingScreen.LogoContainer = logoContainer
-    LoadingScreen.GlowRing = glowRing
-    LoadingScreen.CardStroke = cardStroke
-    LoadingScreen.LogCount = 0
-
+    LS.GUI=gui; LS.Card=card; LS.Overlay=overlay; LS.Fill=pf; LS.Pct=pct; LS.Status=stl; LS.Log=lf
+    LS.Logo=logoCont; LS.Glow=gr; LS.Stroke=cs; LS.LC=0
     return gui
 end
 
-function LoadingScreen.SetProgress(current, total)
-    if not LoadingScreen.ProgressFill then return end
-    local fraction = current / total
-    local percent = math.floor(fraction * 100)
-
-    TweenService:Create(LoadingScreen.ProgressFill, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {
-        Size = UDim2.new(fraction, 0, 1, 0)
-    }):Play()
-
-    LoadingScreen.PercentLabel.Text = percent .. "%"
+function LS.SetProgress(c,t) if not LS.Fill then return end
+    TweenService:Create(LS.Fill,TweenInfo.new(0.3),{Size=UDim2.new(c/t,0,1,0)}):Play()
+    LS.Pct.Text = math.floor(c/t*100).."%"
 end
-
-function LoadingScreen.SetStatus(text)
-    if not LoadingScreen.StatusLabel then return end
-    LoadingScreen.StatusLabel.Text = text
+function LS.SetStatus(t) if LS.Status then LS.Status.Text = t end end
+function LS.AddLog(icon,text,color)
+    if not LS.Log then return end; LS.LC=LS.LC+1
+    local ch={}; for _,c in pairs(LS.Log:GetChildren()) do if c:IsA("TextLabel") then table.insert(ch,c) end end
+    while #ch>4 do ch[1]:Destroy(); table.remove(ch,1) end
+    local e=Instance.new("TextLabel"); e.Size=UDim2.new(1,0,0,14); e.BackgroundTransparency=1
+    e.Text=icon.." "..text; e.TextColor3=color or TEXT_SECONDARY; e.Font=Enum.Font.Code; e.TextSize=11
+    e.TextXAlignment=Enum.TextXAlignment.Left; e.TextTruncate=Enum.TextTruncate.AtEnd; e.LayoutOrder=LS.LC
+    e.ZIndex=12; e.Parent=LS.Log; e.TextTransparency=1
+    TweenService:Create(e,TweenInfo.new(0.2),{TextTransparency=0}):Play()
 end
-
-function LoadingScreen.AddLog(icon, text, color)
-    if not LoadingScreen.LogFrame then return end
-    LoadingScreen.LogCount = LoadingScreen.LogCount + 1
-
-    -- Удалить старые
-    local children = {}
-    for _, child in pairs(LoadingScreen.LogFrame:GetChildren()) do
-        if child:IsA("TextLabel") then
-            table.insert(children, child)
-        end
-    end
-    while #children > 4 do
-        children[1]:Destroy()
-        table.remove(children, 1)
-    end
-
-    local logEntry = Instance.new("TextLabel")
-    logEntry.Size = UDim2.new(1, 0, 0, 14)
-    logEntry.BackgroundTransparency = 1
-    logEntry.Text = icon .. " " .. text
-    logEntry.TextColor3 = color or TEXT_SECONDARY
-    logEntry.Font = Enum.Font.Code
-    logEntry.TextSize = 11
-    logEntry.TextXAlignment = Enum.TextXAlignment.Left
-    logEntry.TextTruncate = Enum.TextTruncate.AtEnd
-    logEntry.LayoutOrder = LoadingScreen.LogCount
-    logEntry.ZIndex = 12
-    logEntry.Parent = LoadingScreen.LogFrame
-
-    -- Fade in
-    logEntry.TextTransparency = 1
-    TweenService:Create(logEntry, TweenInfo.new(0.2), {
-        TextTransparency = 0
-    }):Play()
+function LS.Retry(n,a,m) if not LS.Status then return end
+    LS.Status.Text="⏳ Retrying "..n.." ("..a.."/"..m..")"; LS.Status.TextColor3=WARNING
+    LS.AddLog("🔄",n.." retry "..a.."/"..m, WARNING)
 end
-
-function LoadingScreen.SetRetrying(moduleName, attempt, maxAttempts)
-    if not LoadingScreen.StatusLabel then return end
-    LoadingScreen.StatusLabel.Text = "⏳ Retrying " .. moduleName .. " (" .. attempt .. "/" .. maxAttempts .. ")"
-    LoadingScreen.StatusLabel.TextColor3 = WARNING
-    LoadingScreen.AddLog("🔄", moduleName .. " retry " .. attempt .. "/" .. maxAttempts, WARNING)
-
-    -- Мигание
-    if LoadingScreen.ProgressFill then
-        TweenService:Create(LoadingScreen.ProgressFill, TweenInfo.new(0.2), {
-            BackgroundColor3 = WARNING
-        }):Play()
-        task.delay(0.3, function()
-            if LoadingScreen.ProgressFill and LoadingScreen.ProgressFill.Parent then
-                TweenService:Create(LoadingScreen.ProgressFill, TweenInfo.new(0.2), {
-                    BackgroundColor3 = ACCENT
-                }):Play()
-            end
-        end)
-    end
+function LS.Dismiss() LS._alive=false; if not LS.GUI or not LS.GUI.Parent then return end
+    TweenService:Create(LS.Card,TweenInfo.new(0.4,Enum.EasingStyle.Back,Enum.EasingDirection.In),{Size=UDim2.new(0,380,0,0),BackgroundTransparency=1}):Play()
+    TweenService:Create(LS.Overlay,TweenInfo.new(0.5),{BackgroundTransparency=1}):Play()
+    task.delay(0.6,function() if LS.GUI then LS.GUI:Destroy(); LS.GUI=nil end end)
 end
-
-function LoadingScreen.StopAnimations()
-    LoadingScreen._pulseAlive = false
-    LoadingScreen._gradientAlive = false
+function LS.ShowSuccess()
+    if LS.Stroke then TweenService:Create(LS.Stroke,TweenInfo.new(0.3),{Color=SUCCESS,Transparency=0}):Play() end
+    if LS.Fill then TweenService:Create(LS.Fill,TweenInfo.new(0.3),{BackgroundColor3=SUCCESS,Size=UDim2.new(1,0,1,0)}):Play() end
+    if LS.Pct then LS.Pct.Text="100%"; LS.Pct.TextColor3=SUCCESS end
+    if LS.Status then LS.Status.Text="✅ Ready!"; LS.Status.TextColor3=SUCCESS end
+    if LS.Logo then TweenService:Create(LS.Logo,TweenInfo.new(0.3),{BackgroundColor3=SUCCESS}):Play() end
+    LS.AddLog("✅","All modules loaded!",SUCCESS)
+    task.delay(2,function() LS.Dismiss() end)
 end
-
-function LoadingScreen.Dismiss()
-    LoadingScreen.StopAnimations()
-    
-    if not LoadingScreen.GUI or not LoadingScreen.GUI.Parent then return end
-
-    TweenService:Create(LoadingScreen.Card, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
-        Size = UDim2.new(0, 380, 0, 0),
-        BackgroundTransparency = 1
-    }):Play()
-    TweenService:Create(LoadingScreen.Overlay, TweenInfo.new(0.5), {
-        BackgroundTransparency = 1
-    }):Play()
-    task.delay(0.6, function()
-        if LoadingScreen.GUI and LoadingScreen.GUI.Parent then
-            LoadingScreen.GUI:Destroy()
-            LoadingScreen.GUI = nil
-        end
+function LS.ShowError(mod,err)
+    if LS.Stroke then TweenService:Create(LS.Stroke,TweenInfo.new(0.3),{Color=DANGER,Transparency=0}):Play() end
+    if LS.Fill then TweenService:Create(LS.Fill,TweenInfo.new(0.3),{BackgroundColor3=DANGER}):Play() end
+    if LS.Pct then LS.Pct.TextColor3=DANGER end
+    if LS.Status then LS.Status.Text="❌ "..mod; LS.Status.TextColor3=DANGER end
+    if LS.Logo then TweenService:Create(LS.Logo,TweenInfo.new(0.3),{BackgroundColor3=DANGER}):Play() end
+    LS.AddLog("❌",mod..": "..(err or "?"),DANGER)
+    local rb=Instance.new("TextButton"); rb.AnchorPoint=Vector2.new(0.5,1); rb.Size=UDim2.new(0.4,0,0,32)
+    rb.Position=UDim2.new(0.3,0,1,-12); rb.BackgroundColor3=ACCENT; rb.Text="🔄 Retry"; rb.TextColor3=Color3.new(1,1,1)
+    rb.Font=Enum.Font.GothamBold; rb.TextSize=14; rb.ZIndex=13; rb.Parent=LS.Card
+    Instance.new("UICorner",rb).CornerRadius=UDim.new(0,8)
+    rb.MouseButton1Click:Connect(function() LS._alive=false; if LS.GUI then LS.GUI:Destroy() end
+        shared._TCP_LOADING=nil; shared.TCP=nil; task.wait(0.5)
+        pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/"..REPO.."/main/loader.lua"))() end)
     end)
+    local cb=Instance.new("TextButton"); cb.AnchorPoint=Vector2.new(0.5,1); cb.Size=UDim2.new(0.4,0,0,32)
+    cb.Position=UDim2.new(0.7,0,1,-12); cb.BackgroundColor3=DANGER; cb.BackgroundTransparency=0.3; cb.Text="✕ Cancel"
+    cb.TextColor3=Color3.new(1,1,1); cb.Font=Enum.Font.GothamBold; cb.TextSize=14; cb.ZIndex=13; cb.Parent=LS.Card
+    Instance.new("UICorner",cb).CornerRadius=UDim.new(0,8)
+    cb.MouseButton1Click:Connect(function() fullCleanup(); LS._alive=false; LS.Dismiss() end)
 end
 
-function LoadingScreen.ShowSuccess()
-    if not LoadingScreen.Card then return end
+LS.Create(); task.wait(0.6)
 
-    -- Зелёная обводка
-    if LoadingScreen.CardStroke then
-        TweenService:Create(LoadingScreen.CardStroke, TweenInfo.new(0.3), {
-            Color = SUCCESS, Transparency = 0
-        }):Play()
-    end
-
-    -- Прогресс бар зелёный
-    if LoadingScreen.ProgressFill then
-        TweenService:Create(LoadingScreen.ProgressFill, TweenInfo.new(0.3), {
-            BackgroundColor3 = SUCCESS,
-            Size = UDim2.new(1, 0, 1, 0)
-        }):Play()
-    end
-
-    if LoadingScreen.PercentLabel then
-        LoadingScreen.PercentLabel.Text = "100%"
-        LoadingScreen.PercentLabel.TextColor3 = SUCCESS
-    end
-    if LoadingScreen.StatusLabel then
-        LoadingScreen.StatusLabel.Text = "✅ Ready! Launching..."
-        LoadingScreen.StatusLabel.TextColor3 = SUCCESS
-    end
-
-    -- Лого зелёный
-    if LoadingScreen.LogoContainer then
-        TweenService:Create(LoadingScreen.LogoContainer, TweenInfo.new(0.3), {
-            BackgroundColor3 = SUCCESS
-        }):Play()
-    end
-    if LoadingScreen.GlowRing then
-        TweenService:Create(LoadingScreen.GlowRing, TweenInfo.new(0.3), {
-            Color = SUCCESS
-        }):Play()
-    end
-
-    LoadingScreen.AddLog("✅", "All modules loaded!", SUCCESS)
-
-    -- Исчезновение через 2 секунды
-    task.delay(2, function()
-        LoadingScreen.Dismiss()
-    end)
-end
-
-function LoadingScreen.ShowError(moduleName, errorMsg)
-    if not LoadingScreen.Card then return end
-
-    -- Красная обводка
-    if LoadingScreen.CardStroke then
-        TweenService:Create(LoadingScreen.CardStroke, TweenInfo.new(0.3), {
-            Color = DANGER, Transparency = 0
-        }):Play()
-    end
-
-    -- Прогресс бар красный
-    if LoadingScreen.ProgressFill then
-        TweenService:Create(LoadingScreen.ProgressFill, TweenInfo.new(0.3), {
-            BackgroundColor3 = DANGER
-        }):Play()
-    end
-
-    if LoadingScreen.PercentLabel then
-        LoadingScreen.PercentLabel.TextColor3 = DANGER
-    end
-    if LoadingScreen.StatusLabel then
-        LoadingScreen.StatusLabel.Text = "❌ Failed: " .. moduleName
-        LoadingScreen.StatusLabel.TextColor3 = DANGER
-    end
-
-    -- Лого красный
-    if LoadingScreen.LogoContainer then
-        TweenService:Create(LoadingScreen.LogoContainer, TweenInfo.new(0.3), {
-            BackgroundColor3 = DANGER
-        }):Play()
-    end
-    if LoadingScreen.GlowRing then
-        TweenService:Create(LoadingScreen.GlowRing, TweenInfo.new(0.3), {
-            Color = DANGER
-        }):Play()
-    end
-
-    LoadingScreen.AddLog("❌", moduleName .. ": " .. (errorMsg or "unknown"), DANGER)
-
-    -- ===== КНОПКА RETRY =====
-    local retryBtn = Instance.new("TextButton")
-    retryBtn.AnchorPoint = Vector2.new(0.5, 1)
-    retryBtn.Size = UDim2.new(0.4, 0, 0, 32)
-    retryBtn.Position = UDim2.new(0.3, 0, 1, -12)
-    retryBtn.BackgroundColor3 = ACCENT
-    retryBtn.Text = "🔄 Retry"
-    retryBtn.TextColor3 = Color3.new(1, 1, 1)
-    retryBtn.Font = Enum.Font.GothamBold
-    retryBtn.TextSize = 14
-    retryBtn.AutoButtonColor = true
-    retryBtn.ZIndex = 13
-    retryBtn.Parent = LoadingScreen.Card
-
-    local retryCorner = Instance.new("UICorner")
-    retryCorner.CornerRadius = UDim.new(0, 8)
-    retryCorner.Parent = retryBtn
-
-    retryBtn.MouseButton1Click:Connect(function()
-        LoadingScreen.StopAnimations()
-        if LoadingScreen.GUI then
-            LoadingScreen.GUI:Destroy()
-            LoadingScreen.GUI = nil
-        end
-        -- Очистить для перезапуска
-        shared._TCP_LOADING = nil
-        shared.TCP = nil
-        task.wait(0.5)
-        -- Перезапуск
-        pcall(function()
-            loadstring(game:HttpGet(
-                "https://raw.githubusercontent.com/" .. REPO .. "/main/loader.lua"
-            ))()
-        end)
-    end)
-
-    -- ===== КНОПКА CANCEL =====
-    local cancelBtn = Instance.new("TextButton")
-    cancelBtn.AnchorPoint = Vector2.new(0.5, 1)
-    cancelBtn.Size = UDim2.new(0.4, 0, 0, 32)
-    cancelBtn.Position = UDim2.new(0.7, 0, 1, -12)
-    cancelBtn.BackgroundColor3 = DANGER
-    cancelBtn.BackgroundTransparency = 0.3
-    cancelBtn.Text = "✕ Cancel"
-    cancelBtn.TextColor3 = Color3.new(1, 1, 1)
-    cancelBtn.Font = Enum.Font.GothamBold
-    cancelBtn.TextSize = 14
-    cancelBtn.AutoButtonColor = true
-    cancelBtn.ZIndex = 13
-    cancelBtn.Parent = LoadingScreen.Card
-
-    local cancelCorner = Instance.new("UICorner")
-    cancelCorner.CornerRadius = UDim.new(0, 8)
-    cancelCorner.Parent = cancelBtn
-
-    cancelBtn.MouseButton1Click:Connect(function()
-        -- ╔══════════════════════════════════════╗
-        -- ║  FIX #2: Очищаем ВСЕ флаги           ║
-        -- ║  чтобы можно было перезапустить       ║
-        -- ╚══════════════════════════════════════╝
-        fullCleanup()
-        LoadingScreen.StopAnimations()
-        LoadingScreen.Dismiss()
-    end)
-end
-
--- ============================================
--- СОЗДАЁМ LOADING SCREEN
--- ============================================
-LoadingScreen.Create()
-task.wait(0.6) -- Дождаться анимации появления
-
--- ============================================
--- ОПРЕДЕЛЕНИЕ URL
--- ============================================
-LoadingScreen.SetStatus("🔍 Detecting server...")
-LoadingScreen.AddLog("🔍", "Searching for repository...", TEXT_SECONDARY)
+LS.SetStatus("🔍 Detecting server...")
+LS.AddLog("🔍","Connecting...",TEXT_SECONDARY)
 
 local URL_FORMATS = {
-    "https://raw.githubusercontent.com/" .. REPO .. "/main/modules/",
-    "https://raw.githubusercontent.com/" .. REPO .. "/refs/heads/main/modules/",
+    "https://raw.githubusercontent.com/"..REPO.."/main/modules/",
+    "https://raw.githubusercontent.com/"..REPO.."/refs/heads/main/modules/",
 }
-
 local BASE_URL = nil
-
-for _, url in pairs(URL_FORMATS) do
-    local ok, result = pcall(function()
-        return game:HttpGet(url .. "config.lua")
-    end)
-    if ok and result and #result > 50 
-       and not result:find("404") 
-       and not result:find("Not Found") then
-        BASE_URL = url
-        LoadingScreen.AddLog("✅", "Server connected", SUCCESS)
-        break
-    end
+for _,url in pairs(URL_FORMATS) do
+    local ok,r = pcall(function() return game:HttpGet(url.."config.lua") end)
+    if ok and r and #r>50 and not r:find("404") then BASE_URL=url; LS.AddLog("✅","Connected",SUCCESS); break end
     task.wait(1)
 end
+if not BASE_URL then LS.ShowError("Connection","Cannot reach GitHub"); shared._TCP_LOADING=nil; return end
 
-if not BASE_URL then
-    LoadingScreen.ShowError("Connection", "Cannot reach GitHub. Check internet.")
-    shared._TCP_LOADING = nil
-    return
-end
+shared.TCP = {Version="2.1", Modules={}, BaseURL=BASE_URL, Loaded=false}
 
--- ============================================
--- NAMESPACE
--- ============================================
-shared.TCP = {
-    Version = "2.0",
-    Modules = {},
-    BaseURL = BASE_URL,
-    Loaded = false,
-}
-
--- ============================================
--- ЗАГРУЗЧИК
--- ============================================
-local function loadModule(name, index, total)
-    local url = BASE_URL .. name .. ".lua"
-
-    for attempt = 1, MAX_RETRIES do
-        local httpOk, source = pcall(function()
-            return game:HttpGet(url)
-        end)
-
-        if not httpOk or not source or #source < 10 then
-            if attempt < MAX_RETRIES then
-                LoadingScreen.SetRetrying(name, attempt, MAX_RETRIES)
-                task.wait(RETRY_DELAY)
-            else
-                return nil, "HTTP failed after " .. MAX_RETRIES .. " tries"
-            end
+local function loadModule(name,i,total)
+    local url = BASE_URL..name..".lua"
+    for attempt=1,MAX_RETRIES do
+        local ok,src = pcall(function() return game:HttpGet(url) end)
+        if not ok or not src or #src<10 then
+            if attempt<MAX_RETRIES then LS.Retry(name,attempt,MAX_RETRIES); task.wait(RETRY_DELAY)
+            else return nil,"HTTP failed" end
         else
-            if source:find("404") or source:find("Not Found") then
-                return nil, "File not found in repository (404)"
-            end
-
-            local compiled, compErr = loadstring(source, name)
-            if not compiled then
-                return nil, "Syntax error: " .. tostring(compErr)
-            end
-
-            local execOk, result = pcall(compiled)
-            if not execOk then
-                return nil, "Runtime error: " .. tostring(result)
-            end
-
-            if result == nil then
-                return nil, "Module returned nil (missing 'return' statement)"
-            end
-
-            LoadingScreen.AddLog("✅", name .. " (" .. #source .. " bytes)", SUCCESS)
-            LoadingScreen.SetProgress(index, total)
-            return result, nil
+            if src:find("404") or src:find("Not Found") then return nil,"404 not found" end
+            local comp,ce = loadstring(src,name); if not comp then return nil,"Syntax: "..tostring(ce) end
+            local eok,res = pcall(comp); if not eok then return nil,"Runtime: "..tostring(res) end
+            if res==nil then return nil,"returned nil" end
+            LS.AddLog("✅",name.." ("..#src.."b)",SUCCESS); LS.SetProgress(i,total)
+            return res,nil
         end
     end
-    return nil, "Unknown error"
+    return nil,"Unknown"
 end
 
--- ============================================
--- ЗАГРУЗКА МОДУЛЕЙ
--- ============================================
+-- ════════════════════════════════════
+--  14 МОДУЛЕЙ (было 12, добавлены scanner и presets)
+-- ════════════════════════════════════
 local modules = {
-    {"config",     "Config"},
-    {"state",      "State"},
-    {"utils",      "Utils"},
-    {"notify",     "Notify"},
-    {"components", "Components"},
-    {"engine",     "Engine"},
-    {"ui",         "UI"},
-    {"status",     "Status"},
-    {"teleport",   "Teleport"},
-    {"input",      "Input"},
-    {"respawn",    "Respawn"},
-    {"init",       "Init"},
+    {"config","Config"}, {"state","State"}, {"utils","Utils"},
+    {"notify","Notify"}, {"components","Components"}, {"engine","Engine"},
+    {"scanner","Scanner"}, {"presets","Presets"},
+    {"ui","UI"}, {"status","Status"}, {"teleport","Teleport"},
+    {"input","Input"}, {"respawn","Respawn"}, {"init","Init"},
 }
 
 local total = #modules
+LS.SetStatus("📦 Loading..."); task.wait(0.3)
+
 local allOk = true
-
-LoadingScreen.SetStatus("📦 Loading modules...")
-task.wait(0.3)
-
-for i, mod in ipairs(modules) do
-    local fileName, key = mod[1], mod[2]
-
-    LoadingScreen.SetStatus("📦 " .. fileName .. " (" .. i .. "/" .. total .. ")")
-
-    local result, err = loadModule(fileName, i, total)
-
-    if result ~= nil then
-        shared.TCP.Modules[key] = result
-        print("✅ [TCP] " .. fileName)
-    else
-        warn("❌ [TCP] " .. fileName .. ": " .. tostring(err))
-        LoadingScreen.ShowError(fileName, err)
-        allOk = false
-        -- НЕ очищаем shared._TCP_LOADING здесь!
-        -- ShowError покажет кнопки Retry/Cancel которые сами очистят
-        return
-    end
-
-    if i < total then
-        task.wait(DELAY_BETWEEN)
-    end
+for i,mod in ipairs(modules) do
+    LS.SetStatus("📦 "..mod[1].." ("..i.."/"..total..")")
+    local res,err = loadModule(mod[1],i,total)
+    if res~=nil then shared.TCP.Modules[mod[2]]=res; print("✅ [TCP] "..mod[1])
+    else warn("❌ [TCP] "..mod[1]..": "..tostring(err)); LS.ShowError(mod[1],err); allOk=false; return end
+    if i<total then task.wait(DELAY_BETWEEN) end
 end
 
--- ============================================
--- УСПЕХ
--- ============================================
-if allOk then
-    shared.TCP.Loaded = true
-    shared._TCP_LOADING = nil
-    LoadingScreen.ShowSuccess()
-    print("═══════════════════════════════════════")
-    print("  ✅ TCP v2.0 — All modules loaded!")
-    print("═══════════════════════════════════════")
-end
+if allOk then shared.TCP.Loaded=true; shared._TCP_LOADING=nil; LS.ShowSuccess() end
