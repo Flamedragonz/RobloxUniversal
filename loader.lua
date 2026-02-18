@@ -1,210 +1,179 @@
 --[[
     ╔══════════════════════════════════════════════════╗
     ║        TELEPORT CONTROL PANEL v2.0               ║
-    ║        LOADER — точка входа                      ║
-    ║                                                  ║
-    ║  loadstring(game:HttpGet("https://raw.github    ║
-    ║  usercontent.com/Flamedragonz/RobloxUniversal   ║
-    ║  /refs/heads/main/loader.lua"))()                ║
+    ║        LOADER — FINAL FIX                        ║
     ╚══════════════════════════════════════════════════╝
 ]]
 
--- Ждём загрузку игры
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
-task.wait(1)
+task.wait(2)
 
 -- ============================================
--- АВТООПРЕДЕЛЕНИЕ РАБОЧЕГО URL
+-- NAMESPACE — используем shared (работает ВЕЗДЕ)
+-- ============================================
+shared.TCP = {
+    Version = "2.0",
+    Modules = {},
+}
+
+-- ============================================
+-- ОПРЕДЕЛЕНИЕ URL
 -- ============================================
 local REPO = "Flamedragonz/RobloxUniversal"
-
 local URL_FORMATS = {
     "https://raw.githubusercontent.com/" .. REPO .. "/main/modules/",
     "https://raw.githubusercontent.com/" .. REPO .. "/refs/heads/main/modules/",
-    "https://raw.githubusercontent.com/" .. REPO .. "/master/modules/",
 }
 
 local BASE_URL = nil
 
 print("═══════════════════════════════════════")
 print("  Teleport Control Panel v2.0")
-print("  Detecting correct URL format...")
+print("  Detecting URL...")
 print("═══════════════════════════════════════")
 
 for _, url in pairs(URL_FORMATS) do
-    local testUrl = url .. "config.lua"
     local ok, result = pcall(function()
-        return game:HttpGet(testUrl)
+        return game:HttpGet(url .. "config.lua")
     end)
-    
-    if ok and result and #result > 50 and not result:find("404") and not result:find("Not Found") then
+    if ok and result and #result > 50 and not result:find("404") then
         BASE_URL = url
-        print("✅ Working URL format found: " .. url)
+        print("✅ URL: " .. url)
         break
-    else
-        print("❌ Not working: " .. url)
     end
+    task.wait(1)
 end
 
 if not BASE_URL then
-    warn("══════════════════════════════════════════════════")
-    warn("  ❌ FATAL: Could not find working URL!")
-    warn("")
-    warn("  Checklist:")
-    warn("  1. Does folder 'modules/' exist in your repo?")
-    warn("  2. Are all .lua files inside modules/ folder?")
-    warn("  3. Is the repo public (not private)?")
-    warn("  4. Did you commit and push the files?")
-    warn("")
-    warn("  Your repo: github.com/" .. REPO)
-    warn("══════════════════════════════════════════════════")
+    warn("❌ No working URL found!")
     return
 end
 
+shared.TCP.BaseURL = BASE_URL
+
 -- ============================================
--- ФУНКЦИЯ ЗАГРУЗКИ МОДУЛЯ
+-- ЗАГРУЗЧИК С RETRY
 -- ============================================
+local MAX_RETRIES = 3
+local DELAY_BETWEEN = 1.5
+local RETRY_DELAY = 2
+
 local function loadModule(name)
     local url = BASE_URL .. name .. ".lua"
-    
-    -- Шаг 1: скачать
-    local httpOk, source = pcall(function()
-        return game:HttpGet(url)
-    end)
-    
-    if not httpOk then
-        warn("❌ [TCP] HTTP failed for: " .. name)
-        warn("   URL: " .. url)
-        warn("   Error: " .. tostring(source))
-        return nil
+
+    for attempt = 1, MAX_RETRIES do
+        local httpOk, source = pcall(function()
+            return game:HttpGet(url)
+        end)
+
+        if not httpOk or not source or #source < 10 then
+            if attempt < MAX_RETRIES then
+                warn("  ⚠️ Attempt " .. attempt .. " failed for " .. name .. ", retry...")
+                task.wait(RETRY_DELAY)
+            else
+                warn("  ❌ HTTP failed: " .. name)
+                return nil
+            end
+        else
+            if source:find("404") or source:find("Not Found") then
+                warn("  ❌ 404: " .. name .. ".lua not found in repo!")
+                return nil
+            end
+
+            local compiled, compErr = loadstring(source, name)
+            if not compiled then
+                warn("  ❌ Syntax error in " .. name .. ": " .. tostring(compErr))
+                return nil
+            end
+
+            local execOk, result = pcall(compiled)
+            if not execOk then
+                warn("  ❌ Runtime error in " .. name .. ": " .. tostring(result))
+                return nil
+            end
+
+            -- ПРОВЕРКА: модуль должен вернуть таблицу
+            if result == nil then
+                warn("  ❌ " .. name .. ".lua returned nil!")
+                warn("     Missing 'return' at end of file?")
+                return nil
+            end
+
+            print("  ✅ " .. name .. " (" .. #source .. " bytes)")
+            return result
+        end
     end
-    
-    if not source or #source < 10 then
-        warn("❌ [TCP] Empty response for: " .. name)
-        warn("   URL: " .. url)
-        return nil
-    end
-    
-    if source:find("404") or source:find("Not Found") then
-        warn("❌ [TCP] 404 Not Found: " .. name)
-        warn("   URL: " .. url)
-        warn("   File does not exist in repository!")
-        return nil
-    end
-    
-    -- Шаг 2: скомпилировать
-    local compileOk, compiled = pcall(loadstring, source)
-    
-    if not compileOk or not compiled then
-        warn("❌ [TCP] Syntax error in: " .. name)
-        warn("   Error: " .. tostring(compiled))
-        warn("   First 200 chars of source:")
-        warn("   " .. string.sub(source, 1, 200))
-        return nil
-    end
-    
-    -- Шаг 3: выполнить
-    local execOk, result = pcall(compiled)
-    
-    if not execOk then
-        warn("❌ [TCP] Runtime error in: " .. name)
-        warn("   Error: " .. tostring(result))
-        return nil
-    end
-    
-    print("✅ [TCP] Loaded: " .. name)
-    return result
+    return nil
 end
 
 -- ============================================
--- ГЛОБАЛЬНЫЙ NAMESPACE
+-- ЗАГРУЗКА ПО ПОРЯДКУ
 -- ============================================
-getgenv().TCP = {
-    Version = "2.0",
-    Modules = {},
-    BaseURL = BASE_URL,
-}
-
--- ============================================
--- ЗАГРУЗКА В ПРАВИЛЬНОМ ПОРЯДКЕ
--- ============================================
---[[
-    Порядок критически важен!
-    Если модуль N не загрузился, все модули после него
-    которые от него зависят — тоже не загрузятся.
-    
-    Цепочка:
-    config [1] → state [2] → utils [3] → notify [4] →
-    components [5] → engine [6] → ui [7] → status [8] →
-    teleport [9] → input [10] → respawn [11] → init [12]
-]]
-
-local loadOrder = {
-    {name = "config",     required = true,  desc = "Settings & colors"},
-    {name = "state",      required = true,  desc = "Shared state"},
-    {name = "utils",      required = true,  desc = "Utilities & animations"},
-    {name = "notify",     required = true,  desc = "Notification system"},
-    {name = "components", required = true,  desc = "UI components"},
-    {name = "engine",     required = true,  desc = "Parts engine"},
-    {name = "ui",         required = true,  desc = "Main UI builder"},
-    {name = "status",     required = true,  desc = "Status updater"},
-    {name = "teleport",   required = true,  desc = "Teleport loop"},
-    {name = "input",      required = true,  desc = "Input handler"},
-    {name = "respawn",    required = true,  desc = "Respawn protection"},
-    {name = "init",       required = true,  desc = "Initialization"},
+local modules = {
+    {"config",     "Config"},
+    {"state",      "State"},
+    {"utils",      "Utils"},
+    {"notify",     "Notify"},
+    {"components", "Components"},
+    {"engine",     "Engine"},
+    {"ui",         "UI"},
+    {"status",     "Status"},
+    {"teleport",   "Teleport"},
+    {"input",      "Input"},
+    {"respawn",    "Respawn"},
+    {"init",       "Init"},
 }
 
 print("")
-print("Loading " .. #loadOrder .. " modules...")
+print("Loading " .. #modules .. " modules...")
 print("─────────────────────────────────────────")
 
-local allLoaded = true
+local allOk = true
 
-for i, moduleInfo in ipairs(loadOrder) do
-    local stepLabel = string.format("[%02d/%02d]", i, #loadOrder)
-    print(stepLabel .. " Loading: " .. moduleInfo.name .. " (" .. moduleInfo.desc .. ")")
-    
-    local result = loadModule(moduleInfo.name)
-    
+for i, mod in ipairs(modules) do
+    local fileName, key = mod[1], mod[2]
+    print(string.format("[%02d/%02d] %s", i, #modules, fileName))
+
+    local result = loadModule(fileName)
+
     if result ~= nil then
-        -- Capitalize first letter for module key
-        local key = moduleInfo.name:sub(1,1):upper() .. moduleInfo.name:sub(2)
-        TCP.Modules[key] = result
-    else
-        if moduleInfo.required then
-            warn("")
-            warn("═══════════════════════════════════════════")
-            warn("  ❌ FATAL: Required module failed: " .. moduleInfo.name)
-            warn("")
-            warn("  Cannot continue loading.")
-            warn("  Fix this module first, then retry.")
-            warn("")
-            warn("  Common fixes:")
-            warn("  • Check the file exists in modules/ folder")
-            warn("  • Check for Lua syntax errors")
-            warn("  • Check that previous modules loaded OK")
-            warn("═══════════════════════════════════════════")
-            allLoaded = false
+        shared.TCP.Modules[key] = result
+
+        -- ВЕРИФИКАЦИЯ: сразу проверяем что записалось
+        if shared.TCP.Modules[key] == nil then
+            warn("  ❌ VERIFY FAILED: " .. key .. " is nil after assignment!")
+            allOk = false
             break
-        else
-            warn("⚠️ Optional module skipped: " .. moduleInfo.name)
         end
+    else
+        warn("")
+        warn("═════════════════════════════════════════════")
+        warn("  ❌ FATAL: " .. fileName .. " failed!")
+        warn("  Check: " .. BASE_URL .. fileName .. ".lua")
+        warn("═════════════════════════════════════════════")
+        allOk = false
+        break
     end
-    
-    task.wait(0.05) -- Небольшая пауза между загрузками
+
+    if i < #modules then
+        task.wait(DELAY_BETWEEN)
+    end
 end
 
 print("─────────────────────────────────────────")
-
-if allLoaded then
-    print("═══════════════════════════════════════")
-    print("  ✅ All modules loaded successfully!")
-    print("  Teleport Control Panel v2.0 ready")
-    print("═══════════════════════════════════════")
+if allOk then
+    print("✅ All " .. #modules .. " modules loaded!")
+    
+    -- Финальная проверка
+    print("")
+    print("Module verification:")
+    for _, mod in ipairs(modules) do
+        local key = mod[2]
+        local status = shared.TCP.Modules[key] ~= nil and "✅" or "❌"
+        print("  " .. status .. " " .. key)
+    end
 else
-    warn("═══════════════════════════════════════")
-    warn("  ❌ Loading failed. See errors above.")
-    warn("═══════════════════════════════════════")
+    warn("❌ Loading incomplete.")
 end
