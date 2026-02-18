@@ -14,7 +14,7 @@
     ╚══════════════════════════════════════╝
 ]]
 
-local TCP = getgenv().TCP
+local TCP = shared.TCP
 local Config = TCP.Modules.Config
 local Utils = TCP.Modules.Utils
 
