@@ -1,9 +1,3 @@
---[[
-    TCP MINIMAL LOADER — для отладки
-    Без Loading Screen, только текст в консоли
-    Максимально подробные ошибки
-]]
-
 if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(1)
 
