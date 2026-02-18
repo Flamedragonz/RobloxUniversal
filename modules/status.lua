@@ -1,25 +1,16 @@
 --[[
-    ╔══════════════════════════════════════╗
-    ║  MODULE: status.lua                  ║
-    ║  Обновление статистики в реалтайме   ║
-    ║                                      ║
-    ║  Зависимости: config, state, utils,  ║
-    ║               engine                 ║
-    ║                                      ║
-    ║  RAW ссылка → loader.lua →           ║
-    ║  loadModule("status")                ║
-    ╚══════════════════════════════════════╝
+    MODULE: status.lua v2.1
+    + Uptime, Rate, ESP refresh
 ]]
 
 local Stats = game:GetService("Stats")
-
 local TCP = shared.TCP
-local Config = TCP.Modules.Config
-local State = TCP.Modules.State
-local Utils = TCP.Modules.Utils
-local Engine = TCP.Modules.Engine
-
+if not TCP or not TCP.Modules then return nil end
+local Config=TCP.Modules.Config; local State=TCP.Modules.State
+local Utils=TCP.Modules.Utils; local Engine=TCP.Modules.Engine
+if not Config or not State or not Utils or not Engine then return nil end
 local C = Config.Colors
+
 local Status = {}
 
 function Status.Start()
@@ -30,94 +21,84 @@ function Status.Start()
 
                 -- Ping
                 if E.Ping then
-                    local ok, ping = pcall(function()
-                        return math.round(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
-                    end)
-                    if ok then
-                        E.Ping.Text = ping .. " ms"
-                        E.Ping.TextColor3 = ping < 100 and C.Success
-                            or (ping < 200 and C.Warning or C.Danger)
+                    local ok,p = pcall(function() return math.round(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+                    if ok then E.Ping.Text=p.." ms"
+                        E.Ping.TextColor3 = p<100 and C.Success or (p<200 and C.Warning or C.Danger)
                     end
                 end
 
-                -- Collected
-                if E.Collected then
-                    E.Collected.Text = tostring(State.Stats.CollectedParts)
+                if E.Collected then E.Collected.Text=tostring(State.Stats.CollectedParts) end
+                if E.Active then E.Active.Text=#State.PartsToTeleport.." / "..Config.MaxParts end
+
+                -- Uptime
+                if E.Uptime then
+                    local el = tick()-State.Stats.StartTime
+                    E.Uptime.Text = string.format("%02d:%02d",math.floor(el/60),math.floor(el%60))
                 end
 
-                -- Active
-                if E.Active then
-                    E.Active.Text = #State.PartsToTeleport .. " / " .. Config.MaxParts
+                -- Rate
+                if E.Rate then
+                    local el = tick()-State.Stats.StartTime
+                    if el>10 then E.Rate.Text = string.format("~%.1f/min",State.Stats.CollectedParts/(el/60))
+                    else E.Rate.Text = "..." end
                 end
 
                 -- Status card
                 if E.StatusLabel then
-                    local active = State.IsActive
-                    E.StatusLabel.Text = active and "ACTIVE" or "PAUSED"
-                    E.StatusLabel.TextColor3 = active and C.Success or C.Warning
-                    Utils.Tween(E.StatusDot, {
-                        BackgroundColor3 = active and C.Success or C.Warning
-                    }, 0.3)
-                    if E.StatusStroke then
-                        Utils.Tween(E.StatusStroke, {
-                            Color = active and C.Success or C.Warning
-                        }, 0.3)
+                    local a=State.IsActive
+                    E.StatusLabel.Text = a and "ACTIVE" or "PAUSED"
+                    E.StatusLabel.TextColor3 = a and C.Success or C.Warning
+                    if E.StatusDot then Utils.Tween(E.StatusDot,{BackgroundColor3=a and C.Success or C.Warning},0.3) end
+                    if E.StatusStroke then Utils.Tween(E.StatusStroke,{Color=a and C.Success or C.Warning},0.3) end
+                end
+
+                -- Pinned status
+                if E.PinnedDot then
+                    E.PinnedDot.BackgroundColor3 = State.IsActive and C.Success or C.Warning
+                end
+                if E.PinnedText then
+                    if State.IsActive then
+                        E.PinnedText.Text = State.LoopActive
+                            and ("🔄 " .. #State.PartsToTeleport .. "/" .. Config.MaxParts)
+                            or ("● " .. #State.PartsToTeleport .. "/" .. Config.MaxParts)
+                    else
+                        E.PinnedText.Text = "⏸ PAUSED"
                     end
                 end
 
-                -- Sub label
                 if E.StatusSub then
                     if Config.LoopMode then
-                        E.StatusSub.Text = State.LoopActive
-                            and "Loop running... (K to stop)"
-                            or "Press K to start loop"
-                    else
-                        E.StatusSub.Text = "Press K to pull once"
-                    end
+                        E.StatusSub.Text = State.LoopActive and "K to stop" or "K to start"
+                    else E.StatusSub.Text = "K to pull" end
                 end
 
-                -- Key hint
                 if E.KeyHint then
-                    if Config.LoopMode then
-                        E.KeyHint.Text = State.LoopActive and "Stop Loop" or "Start Loop"
-                    else
-                        E.KeyHint.Text = "Pull Once"
-                    end
+                    if Config.LoopMode then E.KeyHint.Text=State.LoopActive and "Stop" or "Start"
+                    else E.KeyHint.Text="Pull" end
                 end
 
-                -- Target
                 if E.Target then
-                    if Config.TargetMode == "Mouse" then
-                        E.Target.Text = "Mouse"
+                    if Config.TargetMode=="Mouse" then E.Target.Text="Mouse"
                     else
-                        local name = State.CustomTargetPart
-                            and State.CustomTargetPart.Name
-                            or Config.TargetPartName
-                        E.Target.Text = (name == "" and "Player" or name)
+                        local n=State.CustomTargetPart and State.CustomTargetPart.Name or Config.TargetPartName
+                        E.Target.Text=(n=="" and "Player" or n)
                     end
                 end
 
-                -- Pulsing dot when loop active
-                if State.IsActive and State.LoopActive then
-                    local pulse = (math.sin(tick() * 4) + 1) / 2
-                    if E.StatusDot then
-                        E.StatusDot.BackgroundTransparency = pulse * 0.5
-                    end
-                else
-                    if E.StatusDot then
-                        E.StatusDot.BackgroundTransparency = 0
-                    end
-                end
+                -- Pulse
+                if State.IsActive and State.LoopActive and E.StatusDot then
+                    E.StatusDot.BackgroundTransparency = (math.sin(tick()*4)+1)/2*0.5
+                elseif E.StatusDot then E.StatusDot.BackgroundTransparency=0 end
 
                 -- Selection box
-                if Config.TargetMode == "CustomPart" then
-                    local t = State.CustomTargetPart or Engine.FindCustomTarget()
+                if Config.TargetMode=="CustomPart" then
+                    local t=State.CustomTargetPart or Engine.FindCustomTarget()
                     if t then Engine.UpdateSelectionBox(t) end
-                elseif Config.TargetMode == "Player" then
-                    Engine.UpdateSelectionBox(nil)
-                end
-            end)
+                elseif Config.TargetMode=="Player" then Engine.UpdateSelectionBox(nil) end
 
+                -- ESP refresh
+                Engine.ESP.Refresh()
+            end)
             task.wait(0.15)
         end
     end)
