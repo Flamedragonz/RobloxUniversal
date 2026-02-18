@@ -30,7 +30,8 @@ function UI.Create()
     UI.Destroy()
     local gui = Instance.new("ScreenGui"); gui.Name="TCP_VapeStyle"; gui.ResetOnSpawn=false
     gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; gui.DisplayOrder=999; gui.IgnoreGuiInset=true
-    pcall(function() gui.Parent=CoreGui end) or pcall(function() gui.Parent=State.Player.PlayerGui end)
+    pcall(function() gui.Parent=CoreGui end) or 
+    pcall(function() gui.Parent=State.Player.PlayerGui end)
     State.GUI=gui; Notify.Init(gui)
 
     -- ===== MAIN FRAME =====
