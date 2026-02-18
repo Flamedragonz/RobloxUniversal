@@ -147,7 +147,11 @@ local function doRequest(options)
     return result
 end
 
-local function fetchGraves()
+-- ============================================================
+-- АВТОИНИЦИАЛИЗАЦИЯ BIN
+-- ============================================================
+local function initBin()
+    -- Проверяем что bin существует и содержит нужную структуру
     local result = doRequest({
         Url    = SYNC_URL .. "/latest",
         Method = "GET",
@@ -156,14 +160,101 @@ local function fetchGraves()
             ["X-Bin-Meta"]   = "false",
         },
     })
+
+    if not result then
+        warn("[GraveSync] initBin: нет ответа")
+        return false
+    end
+
+    local body = result.Body or result.body or ""
+    local code = result.StatusCode or result.status or 0
+
+    -- Bin пустой или повреждён — записываем начальную структуру
+    if code == 400 or code == 404 or body == "" or body == "null" or body == "{}" then
+        print("[GraveSync] Bin пустой, инициализируем...")
+
+        local initResult = doRequest({
+            Url    = SYNC_URL,
+            Method = "PUT",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["X-Master-Key"] = API_KEY,
+            },
+            Body = '{"graves":[],"removed":[]}',
+        })
+
+        if initResult then
+            local ic = initResult.StatusCode or initResult.status or 0
+            if ic == 200 then
+                print("[GraveSync] ✓ Bin инициализирован!")
+                return true
+            else
+                warn("[GraveSync] initBin PUT failed: " .. ic
+                    .. " | " .. tostring(initResult.Body or ""):sub(1,100))
+                return false
+            end
+        end
+        return false
+    end
+
+    -- Bin есть — проверяем структуру данных
+    local ok, parsed = pcall(HttpService.JSONDecode, HttpService, body)
+    if ok then
+        local data = parsed.record or parsed
+        -- Если структура неправильная — чиним
+        if type(data) ~= "table" or not data.graves then
+            print("[GraveSync] Структура bin неверная, исправляем...")
+            doRequest({
+                Url    = SYNC_URL,
+                Method = "PUT",
+                Headers = {
+                    ["Content-Type"] = "application/json",
+                    ["X-Master-Key"] = API_KEY,
+                },
+                Body = '{"graves":[],"removed":[]}',
+            })
+        end
+    end
+
+    return true
+end
+
+-- ============================================================
+-- ИСПРАВЛЕННЫЙ fetchGraves
+-- ============================================================
+local function fetchGraves()
+    if not syncEnabled then return nil, nil end
+
+    local result = doRequest({
+        Url    = SYNC_URL .. "/latest",
+        Method = "GET",
+        Headers = {
+            ["X-Master-Key"] = API_KEY,
+            ["X-Bin-Meta"]   = "false",
+        },
+    })
+
     if not result then return nil, nil end
 
     local body = result.Body or result.body or ""
     local code = result.StatusCode or result.status or 0
 
+    -- Bin пустой — инициализируем и возвращаем пустую структуру
+    if code == 400 then
+        warn("[GraveSync] fetch 400 — пробуем инициализировать bin...")
+        initBin()
+        return {graves={}, removed={}}, 0
+    end
+
     if code ~= 200 then
         warn("[GraveSync] fetch HTTP " .. code .. " | " .. tostring(body):sub(1,120))
         return nil, nil
+    end
+
+    -- Пустое тело
+    if body == "" or body == "null" then
+        initBin()
+        return {graves={}, removed={}}, 0
     end
 
     local ok, parsed = pcall(HttpService.JSONDecode, HttpService, body)
@@ -172,16 +263,49 @@ local function fetchGraves()
         return nil, nil
     end
 
-    -- jsonbin v3 возвращает {record:{...}, metadata:{version:N}}
     local version = (parsed.metadata and parsed.metadata.version) or 0
     local data    = parsed.record or parsed
+
+    -- Гарантируем структуру
+    if type(data) ~= "table" then data = {} end
+    data.graves  = data.graves  or {}
+    data.removed = data.removed or {}
+
     return data, version
 end
 
+-- ============================================================
+-- ИСПРАВЛЕННЫЙ pushGraves — защита от пустых данных
+-- ============================================================
 local function pushGraves(tbl)
-    local ok, body = pcall(HttpService.JSONEncode, HttpService, tbl)
+    if not syncEnabled then return false end
+
+    -- Гарантируем что отправляем валидную структуру
+    local safeTbl = {
+        graves  = tbl.graves  or {},
+        removed = tbl.removed or {},
+    }
+
+    -- Удаляем дубликаты в removed
+    local seen = {}
+    local cleanRemoved = {}
+    for _, id in ipairs(safeTbl.removed) do
+        if not seen[id] then
+            seen[id] = true
+            table.insert(cleanRemoved, id)
+        end
+    end
+    safeTbl.removed = cleanRemoved
+
+    local ok, body = pcall(HttpService.JSONEncode, HttpService, safeTbl)
     if not ok then
         warn("[GraveSync] JSON encode error: " .. tostring(body))
+        return false
+    end
+
+    -- Проверка что body не пустой
+    if not body or body == "" or body == "null" then
+        warn("[GraveSync] encoded body пустой!")
         return false
     end
 
@@ -194,6 +318,7 @@ local function pushGraves(tbl)
         },
         Body = body,
     })
+
     if not result then return false end
 
     local code = result.StatusCode or result.status or 0
@@ -202,6 +327,7 @@ local function pushGraves(tbl)
             .. tostring(result.Body or result.body or ""):sub(1,120))
         return false
     end
+
     return true
 end
 
@@ -682,22 +808,36 @@ end)
 -- Стартовая синхронизация
 task.delay(3, function()
     if not syncEnabled then
-        warn("[GraveSync] HTTP недоступен — синхронизация отключена")
+        warn("[GraveSync] HTTP недоступен")
         return
     end
+
+    -- Сначала инициализируем bin
+    print("[GraveSync] Инициализация bin...")
+    initBin()
+
+    task.wait(1)  -- ждём пока запись применится
+
     local data, version = fetchGraves()
     if not data then
         warn("[GraveSync] Не удалось получить данные при старте")
         return
     end
+
     lastVersion = version or -1
     local count = 0
+
     for _, payload in ipairs(data.graves or {}) do
         if payload.owner ~= myClientId then
-            pcall(buildFromPayload, payload)
-            count = count + 1
+            local ok, err = pcall(buildFromPayload, payload)
+            if not ok then
+                warn("[GraveSync] buildFromPayload error: " .. tostring(err))
+            else
+                count = count + 1
+            end
         end
     end
+
     print("[GraveSync] ✓ Старт синхронизация: " .. count .. " могил загружено")
 end)
 
