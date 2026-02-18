@@ -3,663 +3,268 @@
 -- LocalScript
 -- ============================================================
 
-local Players     = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
+-- ============================================================
+-- СИНХРОНИЗАЦИЯ ЧЕРЕЗ JSONBIN.IO
+-- Использует HTTP API эксплойт-клиента (request/syn.request/http.request)
+-- ============================================================
 local RunService  = game:GetService("RunService")
+local Players     = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
--- ============================================================
--- НАСТРОЙКИ СИНХРОНИЗАЦИИ
--- ============================================================
-local API_KEY       = "$2a$10$MCM7FTbZMBt2ei7K2jwHI.vGnwQ0M3.l9u6.QEcjL5zuFPViZvA.2"   -- X-Master-Key из jsonbin.io
-local BIN_ID        = "6995cf2c43b1c97be988c014"    -- ID твоего bin
+-- !! ВСТАВЬ СВОИ ДАННЫЕ !!
+local API_KEY       = "YOUR_API_KEY_HERE"
+local BIN_ID        = "YOUR_BIN_ID_HERE"
 local SYNC_URL      = "https://api.jsonbin.io/v3/b/" .. BIN_ID
-local POLL_INTERVAL = 3  -- секунд между проверками
+local POLL_INTERVAL = 4
 
-local myClientId  = LocalPlayer.Name .. "_" .. tostring(math.random(100000,999999))
+-- Определяем доступную HTTP функцию клиента
+local httpRequest = (function()
+    -- Synapse X, Fluxus, Solara
+    if syn and syn.request then
+        return syn.request
+    end
+    -- KRNL, Electrons и др.
+    if http and http.request then
+        return http.request
+    end
+    -- Универсальный fallback
+    if request then
+        return request
+    end
+    -- Попытка через hookfunction окружения
+    if (getgenv or getrenv) then
+        local env = getgenv and getgenv() or getrenv()
+        if env.request then return env.request end
+        if env.syn and env.syn.request then return env.syn.request end
+    end
+    warn("[GraveSync] HTTP функция не найдена! Синхронизация отключена.")
+    return nil
+end)()
+
+local syncEnabled = httpRequest ~= nil
+
+local myClientId  = LocalPlayer.Name.."_"..tostring(math.random(100000,999999))
 local lastVersion = -1
-local builtModels = {}  -- {[id] = Model}
-local localGraves = {}  -- {[id] = payload}  то что построили МЫ
+local builtModels = {}
+local localGraves = {}
 
--- ============================================================
--- УТИЛИТЫ
--- ============================================================
-local function addCorner(parent, radius)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, radius or 8)
-    c.Parent = parent
-    return c
-end
-
-local function addStroke(parent, color, thickness)
-    local s = Instance.new("UIStroke")
-    s.Color     = color     or Color3.fromRGB(60,60,60)
-    s.Thickness = thickness or 1
-    s.Parent    = parent
-    return s
-end
-
-local function makePart(model, name, size, cf, color, material, transparency)
-    local p = Instance.new("Part")
-    p.Name         = name
-    p.Size         = size
-    p.CFrame       = cf
-    p.Anchored     = true
-    p.CanCollide   = false
-    p.Color        = color        or Color3.fromRGB(140,140,140)
-    p.Material     = material     or Enum.Material.SmoothPlastic
-    p.Transparency = transparency or 0
-    p.CastShadow   = true
-    p.Parent       = model
-    return p
-end
-
-local function makeWedge(model, name, size, cf, color, material)
-    local p = Instance.new("WedgePart")
-    p.Name       = name
-    p.Size       = size
-    p.CFrame     = cf
-    p.Anchored   = true
-    p.CanCollide = false
-    p.Color      = color    or Color3.fromRGB(140,140,140)
-    p.Material   = material or Enum.Material.SmoothPlastic
-    p.Parent     = model
-    return p
-end
-
--- Цвета
-local stoneC    = Color3.fromRGB(150,145,135)
-local darkC     = Color3.fromRGB(85,82,75)
-local roofC     = Color3.fromRGB(75,58,45)
-local stoneGray = Color3.fromRGB(140,140,140)
-local darkGray  = Color3.fromRGB(80,80,80)
-
--- ============================================================
--- СЕРИАЛИЗАЦИЯ
--- ============================================================
-local function v3t(v)  return {x=v.X, y=v.Y, z=v.Z} end
-local function tv3(t)  return Vector3.new(t.x, t.y, t.z) end
+-- ── Утилиты сериализации ──────────────────────────────────
+local function v3t(v) return {x=v.X, y=v.Y, z=v.Z} end
+local function tv3(t) return Vector3.new(t.x, t.y, t.z) end
 
 local function generateId()
     return myClientId.."_"..tostring(os.clock()):gsub("[%.,]","")
 end
 
--- ============================================================
--- JSONBIN: ЧТЕНИЕ / ЗАПИСЬ
--- ============================================================
-local function fetchGraves()
+-- ── HTTP запросы через клиентский API ────────────────────
+
+local function httpGet(url, headers)
+    if not syncEnabled then return nil end
     local ok, result = pcall(function()
-        return HttpService:RequestAsync({
-            Url    = SYNC_URL.."/latest",
-            Method = "GET",
-            Headers = {
-                ["X-Master-Key"] = API_KEY,
-                ["X-Bin-Meta"]   = "false",
-            },
+        return httpRequest({
+            Url     = url,
+            Method  = "GET",
+            Headers = headers or {},
         })
     end)
     if not ok then
-        warn("[GraveSync] fetch error: "..tostring(result))
+        warn("[GraveSync] GET error: "..tostring(result))
+        return nil
+    end
+    return result
+end
+
+local function httpPut(url, headers, body)
+    if not syncEnabled then return nil end
+    local ok, result = pcall(function()
+        return httpRequest({
+            Url     = url,
+            Method  = "PUT",
+            Headers = headers or {},
+            Body    = body or "",
+        })
+    end)
+    if not ok then
+        warn("[GraveSync] PUT error: "..tostring(result))
+        return nil
+    end
+    return result
+end
+
+-- ── JSONbin чтение ────────────────────────────────────────
+
+local function fetchGraves()
+    if not syncEnabled then return nil, nil end
+
+    local result = httpGet(SYNC_URL.."/latest", {
+        ["X-Master-Key"] = API_KEY,
+        ["X-Bin-Meta"]   = "false",
+    })
+
+    if not result then return nil, nil end
+
+    -- Разные клиенты возвращают по-разному
+    local body = result.Body or result.body or ""
+    local code = result.StatusCode or result.status or 0
+
+    if code ~= 200 then
+        warn("[GraveSync] fetch HTTP "..tostring(code).." | "..tostring(body):sub(1,100))
         return nil, nil
     end
-    if result.StatusCode ~= 200 then
-        warn("[GraveSync] fetch HTTP "..result.StatusCode)
+
+    local ok, parsed = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+
+    if not ok then
+        warn("[GraveSync] JSON parse error: "..tostring(parsed))
         return nil, nil
     end
-    local parsed  = HttpService:JSONDecode(result.Body)
+
     local version = parsed.metadata and parsed.metadata.version or 0
     local data    = parsed.record   or parsed
     return data, version
 end
 
+-- ── JSONbin запись ────────────────────────────────────────
+
 local function pushGraves(tbl)
-    local ok, result = pcall(function()
-        return HttpService:RequestAsync({
-            Url    = SYNC_URL,
-            Method = "PUT",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["X-Master-Key"] = API_KEY,
-            },
-            Body = HttpService:JSONEncode(tbl),
-        })
+    if not syncEnabled then return false end
+
+    local ok, body = pcall(function()
+        return game:GetService("HttpService"):JSONEncode(tbl)
     end)
     if not ok then
-        warn("[GraveSync] push error: "..tostring(result))
+        warn("[GraveSync] JSON encode error: "..tostring(body))
         return false
     end
-    if result.StatusCode ~= 200 then
-        warn("[GraveSync] push HTTP "..result.StatusCode.." "..result.Body)
+
+    local result = httpPut(SYNC_URL, {
+        ["Content-Type"] = "application/json",
+        ["X-Master-Key"] = API_KEY,
+    }, body)
+
+    if not result then return false end
+
+    local code = result.StatusCode or result.status or 0
+    if code ~= 200 then
+        local rb = result.Body or result.body or ""
+        warn("[GraveSync] push HTTP "..tostring(code).." | "..tostring(rb):sub(1,100))
         return false
     end
+
     return true
 end
 
--- ============================================================
--- АВАТАР: копирование
--- ============================================================
-local function cloneAvatarParts(targetPlayer, parentModel)
-    local char = targetPlayer and targetPlayer.Character
-    if not char then return nil, nil, nil end
+-- ── Синхронизация: отправить постройку ───────────────────
 
-    local folder = Instance.new("Model")
-    folder.Name  = "AvatarCopy"
-    folder.Parent = parentModel
-
-    local bodyNames = {
-        "Head","UpperTorso","LowerTorso",
-        "LeftUpperArm","LeftLowerArm","LeftHand",
-        "RightUpperArm","RightLowerArm","RightHand",
-        "LeftUpperLeg","LeftLowerLeg","LeftFoot",
-        "RightUpperLeg","RightLowerLeg","RightFoot",
-        "Torso","Left Arm","Right Arm","Left Leg","Right Leg",
-    }
-
-    local cloned = {}
-    for _, nm in ipairs(bodyNames) do
-        local p = char:FindFirstChild(nm)
-        if p and p:IsA("BasePart") then
-            local cl = p:Clone()
-            for _, v in ipairs(cl:GetDescendants()) do
-                if v:IsA("Script") or v:IsA("LocalScript") or
-                   v:IsA("Motor6D") or v:IsA("Weld") or
-                   v:IsA("WeldConstraint") or v:IsA("BodyMover") then
-                    v:Destroy()
-                end
-            end
-            cl.Anchored   = true
-            cl.CanCollide = false
-            cl.Parent     = folder
-            cloned[nm]    = cl
-        end
-    end
-
-    for _, child in ipairs(char:GetChildren()) do
-        if child:IsA("Accessory") then
-            local cl = child:Clone()
-            local h  = cl:FindFirstChild("Handle")
-            if h then
-                h.Anchored   = true
-                h.CanCollide = false
-                for _, v in ipairs(h:GetDescendants()) do
-                    if v:IsA("Weld") or v:IsA("WeldConstraint") or
-                       v:IsA("Script") or v:IsA("LocalScript") then
-                        v:Destroy()
-                    end
-                end
-            end
-            cl.Parent = folder
-        elseif child:IsA("Shirt") or child:IsA("Pants") or child:IsA("BodyColors") then
-            child:Clone().Parent = folder
-        end
-    end
-
-    return folder, cloned, char
-end
-
--- Аватар лёжа на спине, ногами к +Z
-local function positionAvatarLying(folder, cloned, originalChar, centerCF)
-    local hrp = originalChar:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    for partName, cl in pairs(cloned) do
-        local orig = originalChar:FindFirstChild(partName)
-        if orig then
-            local rel = hrp.CFrame:ToObjectSpace(orig.CFrame)
-            cl.CFrame = centerCF * rel
-        end
-    end
-
-    for _, child in ipairs(folder:GetChildren()) do
-        if child:IsA("Accessory") then
-            local handle  = child:FindFirstChild("Handle")
-            local origAcc = nil
-            for _, oc in ipairs(originalChar:GetChildren()) do
-                if oc:IsA("Accessory") and oc.Name == child.Name then
-                    origAcc = oc; break
-                end
-            end
-            if handle and origAcc then
-                local oh = origAcc:FindFirstChild("Handle")
-                if oh then
-                    local rel = hrp.CFrame:ToObjectSpace(oh.CFrame)
-                    handle.CFrame = centerCF * rel
-                end
-            end
-        end
-    end
-end
-
--- Голова + аксессуары над надгробием
-local function positionHeadAboveGrave(targetPlayer, parentModel, headPos)
-    local char = targetPlayer and targetPlayer.Character
-    if not char then return end
-    local head = char:FindFirstChild("Head")
-    if not head then return end
-
-    local cl = head:Clone()
-    for _, v in ipairs(cl:GetDescendants()) do
-        if v:IsA("Script") or v:IsA("LocalScript") or
-           v:IsA("Motor6D") or v:IsA("Weld") or v:IsA("WeldConstraint") then
-            v:Destroy()
-        end
-    end
-    cl.Anchored   = true
-    cl.CanCollide = false
-    cl.CFrame     = CFrame.new(headPos) * CFrame.Angles(0, math.rad(180), 0)
-    cl.Parent     = parentModel
-
-    for _, acc in ipairs(char:GetChildren()) do
-        if acc:IsA("Accessory") then
-            local oh = acc:FindFirstChild("Handle")
-            if oh then
-                local accCl = acc:Clone()
-                local clH   = accCl:FindFirstChild("Handle")
-                if clH then
-                    for _, v in ipairs(clH:GetDescendants()) do
-                        if v:IsA("Weld") or v:IsA("WeldConstraint") or
-                           v:IsA("Script") or v:IsA("LocalScript") then
-                            v:Destroy()
-                        end
-                    end
-                    clH.Anchored   = true
-                    clH.CanCollide = false
-                    local rel      = head.CFrame:ToObjectSpace(oh.CFrame)
-                    clH.CFrame     = cl.CFrame * rel
-                end
-                accCl.Parent = parentModel
-            end
-        end
-    end
-end
-
--- ============================================================
--- СТРОИМ МОГИЛУ
--- ============================================================
-local function buildGraveModel(origin, style, playerName, targetPlayer)
-    local model    = Instance.new("Model")
-    model.Name     = "Grave_"..playerName
-
-    local slab = makePart(model,"Slab", Vector3.new(4,0.25,7),
-        CFrame.new(origin+Vector3.new(0,0.125,0)),
-        Color3.fromRGB(75,65,55))
-
-    makePart(model,"Mound", Vector3.new(3.5,0.18,6.5),
-        CFrame.new(origin+Vector3.new(0,0.27,0)),
-        Color3.fromRGB(65,50,35), Enum.Material.Grass)
-
-    local stoneZ = origin.Z - 2.8
-
-    if style == "rip" then
-        local stone = makePart(model,"Gravestone", Vector3.new(2.4,3.2,0.45),
-            CFrame.new(Vector3.new(origin.X, origin.Y+1.9, stoneZ)), stoneGray)
-
-        local cap = makePart(model,"Cap", Vector3.new(2.4,0.45,0.45),
-            CFrame.new(Vector3.new(origin.X, origin.Y+3.7, stoneZ))
-                * CFrame.Angles(0,0,math.rad(90)), stoneGray)
-        local mesh = Instance.new("SpecialMesh")
-        mesh.MeshType = Enum.MeshType.Cylinder
-        mesh.Parent   = cap
-
-        local sg  = Instance.new("SurfaceGui")
-        sg.Face   = Enum.NormalId.Back
-        sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-        sg.PixelsPerStud = 60
-        sg.Parent = stone
-
-        local lbl = Instance.new("TextLabel")
-        lbl.Size              = UDim2.new(1,0,1,0)
-        lbl.BackgroundTransparency = 1
-        lbl.TextColor3        = Color3.fromRGB(30,30,30)
-        lbl.Text              = "R.I.P\n"..playerName
-        lbl.Font              = Enum.Font.GothamBold
-        lbl.TextScaled        = true
-        lbl.Parent            = sg
-
-    elseif style == "cross" then
-        makePart(model,"CrossV", Vector3.new(0.35,4.2,0.35),
-            CFrame.new(Vector3.new(origin.X,origin.Y+2.4,stoneZ)), darkGray)
-        makePart(model,"CrossH", Vector3.new(2.2,0.35,0.35),
-            CFrame.new(Vector3.new(origin.X,origin.Y+3.4,stoneZ)), darkGray)
-        makePart(model,"CrossBase", Vector3.new(1.0,0.25,0.6),
-            CFrame.new(Vector3.new(origin.X,origin.Y+0.38,stoneZ)), darkGray)
-    end
-
-    if targetPlayer then
-        positionHeadAboveGrave(targetPlayer, model,
-            Vector3.new(origin.X, origin.Y+1.6, origin.Z+1.0))
-    end
-
-    model.PrimaryPart = slab
-    model.Parent      = workspace
-    return model
-end
-
--- ============================================================
--- СТРОИМ СКЛЕП
--- ============================================================
-local function buildCrypt(origin, playerName, targetPlayer)
-    local model  = Instance.new("Model")
-    model.Name   = "Crypt_"..playerName
-
-    local w,d,h  = 9,13,6
-
-    makePart(model,"Floor",     Vector3.new(w,0.3,d),
-        CFrame.new(origin+Vector3.new(0,0.15,0)), stoneC)
-    makePart(model,"WallBack",  Vector3.new(w,h,0.5),
-        CFrame.new(origin+Vector3.new(0,h/2,-d/2)), stoneC)
-    makePart(model,"WallLeft",  Vector3.new(0.5,h,d),
-        CFrame.new(origin+Vector3.new(-w/2,h/2,0)), stoneC)
-    makePart(model,"WallRight", Vector3.new(0.5,h,d),
-        CFrame.new(origin+Vector3.new(w/2,h/2,0)),  stoneC)
-    makePart(model,"WallFrontL",Vector3.new(2.8,h,0.5),
-        CFrame.new(origin+Vector3.new(-(w/2)+1.4,h/2,d/2)), stoneC)
-    makePart(model,"WallFrontR",Vector3.new(2.8,h,0.5),
-        CFrame.new(origin+Vector3.new((w/2)-1.4,h/2,d/2)),  stoneC)
-    makePart(model,"DoorLintel",Vector3.new(3.4,1.5,0.5),
-        CFrame.new(origin+Vector3.new(0,h-0.75,d/2)), stoneC)
-    makePart(model,"Roof",      Vector3.new(w+0.8,0.4,d+0.8),
-        CFrame.new(origin+Vector3.new(0,h+0.2,0)), darkC)
-
-    -- Фронтон (повёрнут 180° — Front смотрит в +Z)
-    local pedH = 1.6
-    local ped  = makeWedge(model,"Pediment", Vector3.new(w+0.8,pedH,2.5),
-        CFrame.new(origin+Vector3.new(0,h+pedH/2+0.4,d/2+1.25))
-            * CFrame.Angles(0,math.rad(180),0), stoneC)
-
-    local sg  = Instance.new("SurfaceGui")
-    sg.Face   = Enum.NormalId.Front
-    sg.SizingMode    = Enum.SurfaceGuiSizingMode.PixelsPerStud
-    sg.PixelsPerStud = 35
-    sg.Parent = ped
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size              = UDim2.new(1,0,1,0)
-    lbl.BackgroundTransparency = 1
-    lbl.TextColor3        = Color3.fromRGB(20,20,20)
-    lbl.Text              = playerName
-    lbl.Font              = Enum.Font.GothamBold
-    lbl.TextScaled        = true
-    lbl.Parent            = sg
-
-    makePart(model,"RoofCrossV",Vector3.new(0.3,2.5,0.3),
-        CFrame.new(origin+Vector3.new(0,h+1.65,0)), darkGray)
-    makePart(model,"RoofCrossH",Vector3.new(1.4,0.3,0.3),
-        CFrame.new(origin+Vector3.new(0,h+2.5,0)), darkGray)
-
-    for _, xOff in ipairs({-1.4, 1.4}) do
-        makePart(model,"Column",Vector3.new(0.5,h,0.5),
-            CFrame.new(origin+Vector3.new(xOff,h/2,d/2)), stoneC)
-    end
-
-    local sarcZ = -d/2 + 4.5
-    makePart(model,"SarcBase",Vector3.new(2.6,0.7,6),
-        CFrame.new(origin+Vector3.new(0,0.65,sarcZ)),
-        Color3.fromRGB(160,155,145))
-    makePart(model,"SarcLid", Vector3.new(2.4,0.28,5.8),
-        CFrame.new(origin+Vector3.new(0,1.04,sarcZ)),
-        Color3.fromRGB(175,170,160))
-
-    if targetPlayer and targetPlayer.Character then
-        local folder, cloned, origChar = cloneAvatarParts(targetPlayer, model)
-        if folder and cloned then
-            local centerCF = CFrame.new(origin+Vector3.new(0,1.4,sarcZ))
-                * CFrame.Angles(math.rad(-90), math.rad(180), 0)
-            positionAvatarLying(folder, cloned, origChar, centerCF)
-        end
-    end
-
-    model.PrimaryPart = model:FindFirstChild("Floor")
-    model.Parent      = workspace
-    return model
-end
-
--- ============================================================
--- СТРОИМ ЧАСОВНЮ
--- ============================================================
-local function buildChapel(origin)
-    local model  = Instance.new("Model")
-    model.Name   = "Chapel"
-
-    local w,d,h  = 11,16,8
-
-    makePart(model,"Foundation", Vector3.new(w+1.5,0.6,d+1.5),
-        CFrame.new(origin+Vector3.new(0,0.3,0)),
-        Color3.fromRGB(100,95,85))
-
-    makePart(model,"WallBack",  Vector3.new(w,h,0.55),
-        CFrame.new(origin+Vector3.new(0,h/2,-d/2)), stoneC)
-    makePart(model,"WallLeft",  Vector3.new(0.55,h,d),
-        CFrame.new(origin+Vector3.new(-w/2,h/2,0)), stoneC)
-    makePart(model,"WallRight", Vector3.new(0.55,h,d),
-        CFrame.new(origin+Vector3.new(w/2,h/2,0)),  stoneC)
-
-    local doorW = 3.5
-    local sideW = (w-doorW)/2
-    makePart(model,"WallFrontL",Vector3.new(sideW,h,0.55),
-        CFrame.new(origin+Vector3.new(-(doorW/2+sideW/2),h/2,d/2)), stoneC)
-    makePart(model,"WallFrontR",Vector3.new(sideW,h,0.55),
-        CFrame.new(origin+Vector3.new( (doorW/2+sideW/2),h/2,d/2)), stoneC)
-    makePart(model,"DoorLintel",Vector3.new(doorW,h-5.5,0.55),
-        CFrame.new(origin+Vector3.new(0,5.5+(h-5.5)/2,d/2)), stoneC)
-
-    local rH = 3.5
-    makeWedge(model,"RoofBack", Vector3.new(w+1,rH,d/2+0.5),
-        CFrame.new(origin+Vector3.new(0,h+rH/2,-d/4))
-            * CFrame.Angles(0,math.rad(180),0), roofC)
-    makeWedge(model,"RoofFront",Vector3.new(w+1,rH,d/2+0.5),
-        CFrame.new(origin+Vector3.new(0,h+rH/2,d/4)), roofC)
-
-    -- Колокольня сбоку (не перекрывает вход)
-    local tW     = 4
-    local tH     = 13
-    local towerX = origin.X + w/2 + tW/2 + 0.2
-    local towerZ = origin.Z + d/2 - tW/2 - 1
-
-    makePart(model,"TowerBase", Vector3.new(tW,tH,tW),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH/2,towerZ)), stoneC)
-    makePart(model,"BellFloor", Vector3.new(tW,0.3,tW),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH+0.15,towerZ)), stoneC)
-
-    local spireH = 4
-    makeWedge(model,"SpireF",Vector3.new(tW,spireH,tW/2),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH/2,towerZ-tW/4)), roofC)
-    makeWedge(model,"SpireB",Vector3.new(tW,spireH,tW/2),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH/2,towerZ+tW/4))
-            * CFrame.Angles(0,math.rad(180),0), roofC)
-
-    makePart(model,"TowerCrossV",Vector3.new(0.3,2.8,0.3),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH+1.6,towerZ)), darkGray)
-    makePart(model,"TowerCrossH",Vector3.new(1.6,0.3,0.3),
-        CFrame.new(Vector3.new(towerX,origin.Y+tH+spireH+2.4,towerZ)), darkGray)
-
-    local fW = w+10; local fD = d+10; local fH = 1.3
-    local fC = Color3.fromRGB(55,48,40)
-    makePart(model,"FenceBack",  Vector3.new(fW,fH,0.2), CFrame.new(origin+Vector3.new(0,fH/2,-fD/2)), fC)
-    makePart(model,"FenceFront", Vector3.new(fW,fH,0.2), CFrame.new(origin+Vector3.new(0,fH/2, fD/2)), fC)
-    makePart(model,"FenceLeft",  Vector3.new(0.2,fH,fD), CFrame.new(origin+Vector3.new(-fW/2,fH/2,0)), fC)
-    makePart(model,"FenceRight", Vector3.new(0.2,fH,fD), CFrame.new(origin+Vector3.new( fW/2,fH/2,0)), fC)
-
-    for i = 0,9 do
-        local t    = i/9
-        local xPos = -fW/2 + t*fW
-        makePart(model,"SpikeF"..i,Vector3.new(0.14,0.45,0.14),
-            CFrame.new(origin+Vector3.new(xPos,fH+0.22, fD/2)), darkGray)
-        makePart(model,"SpikeB"..i,Vector3.new(0.14,0.45,0.14),
-            CFrame.new(origin+Vector3.new(xPos,fH+0.22,-fD/2)), darkGray)
-    end
-
-    model.Parent = workspace
-    return model
-end
-
--- ============================================================
--- СТРОИМ КЛАДБИЩЕ
--- ============================================================
-local function buildCemetery(origin, playersList)
-    local offsets = {
-        Vector3.new(-6,0,-5), Vector3.new(0,0,-5), Vector3.new(6,0,-5),
-        Vector3.new(-6,0, 3), Vector3.new(0,0, 3), Vector3.new(6,0, 3),
-    }
-    local gStyles = {"rip","cross","rip","cross","rip","cross"}
-
-    for i, offset in ipairs(offsets) do
-        local tp    = playersList[i]
-        local pName = tp and tp.Name or ("Soul_"..i)
-        buildGraveModel(origin+offset, gStyles[i], pName, tp)
-    end
-
-    buildChapel(origin+Vector3.new(0,0,-22))
-end
-
--- ============================================================
--- УДАЛЕНИЕ СУЩЕСТВУЮЩИХ
--- ============================================================
-local function removeExistingGraves()
-    for _, v in ipairs(workspace:GetChildren()) do
-        if v:IsA("Model") and (
-            v.Name:sub(1,6) == "Grave_" or
-            v.Name:sub(1,6) == "Crypt_" or
-            v.Name == "Chapel" or
-            v.Name == "Cemetery"
-        ) then
-            v:Destroy()
-        end
-    end
-end
-
--- ============================================================
--- ПОСТРОИТЬ ИЗ PAYLOAD (от другого клиента)
--- ============================================================
-local function buildFromPayload(payload)
-    if builtModels[payload.id] then return end
-
-    local origin = tv3(payload.origin)
-    local pName  = payload.playerName or "Unknown"
-    local style  = payload.style      or "rip"
-    local tp     = Players:FindFirstChild(pName)
-
-    local model = nil
-
-    if payload.graveType == "grave" then
-        model = buildGraveModel(origin, style, pName, tp)
-    elseif payload.graveType == "crypt" then
-        model = buildCrypt(origin, pName, tp)
-    elseif payload.graveType == "cemetery" then
-        local list = {}
-        for _, nm in ipairs(payload.playerNames or {}) do
-            local p = Players:FindFirstChild(nm)
-            table.insert(list, p or {Name=nm, Character=nil})
-        end
-        buildCemetery(origin, list)
-        -- cemetery не возвращает одну модель, помечаем заглушкой
-        builtModels[payload.id] = true
-        return
-    end
-
-    if model then
-        builtModels[payload.id] = model
-        print("[GraveSync] Получено от "..tostring(payload.owner)..": "..pName)
-    end
-end
-
--- ============================================================
--- СИНХРОНИЗАЦИЯ: отправка
--- ============================================================
 local function syncBuild(payload)
+    if not syncEnabled then return end
     payload.owner = myClientId
 
-    local data, _ = fetchGraves()
-    if not data then data = {graves={}, removed={}} end
-    data.graves  = data.graves  or {}
-    data.removed = data.removed or {}
+    task.spawn(function()  -- не блокируем основной поток
+        local data, _ = fetchGraves()
+        if not data then
+            data = {graves={}, removed={}}
+        end
+        data.graves  = data.graves  or {}
+        data.removed = data.removed or {}
 
-    table.insert(data.graves, payload)
-    localGraves[payload.id] = payload
-    pushGraves(data)
+        table.insert(data.graves, payload)
+        localGraves[payload.id] = payload
+        pushGraves(data)
+        print("[GraveSync] Отправлено: "..payload.playerName)
+    end)
 end
 
-local function syncRemoveOne(id)
-    local data, _ = fetchGraves()
-    if not data then return end
-    data.graves  = data.graves  or {}
-    data.removed = data.removed or {}
-
-    local newG = {}
-    for _, g in ipairs(data.graves) do
-        if g.id ~= id then table.insert(newG, g) end
-    end
-    data.graves = newG
-    table.insert(data.removed, id)
-
-    pushGraves(data)
-    localGraves[id] = nil
-end
+-- ── Синхронизация: удалить свои ──────────────────────────
 
 local function syncRemoveAll()
-    -- Одним запросом удаляем всё своё
-    local data, _ = fetchGraves()
-    if not data then return end
-    data.graves  = data.graves  or {}
-    data.removed = data.removed or {}
+    if not syncEnabled then return end
+    task.spawn(function()
+        local data, _ = fetchGraves()
+        if not data then return end
+        data.graves  = data.graves  or {}
+        data.removed = data.removed or {}
 
-    local myIds = {}
-    for id,_ in pairs(localGraves) do myIds[id] = true end
+        local myIds = {}
+        for id,_ in pairs(localGraves) do myIds[id] = true end
 
-    local newG = {}
-    for _, g in ipairs(data.graves) do
-        if not myIds[g.id] then
-            table.insert(newG, g)
-        else
-            table.insert(data.removed, g.id)
+        local newG = {}
+        for _, g in ipairs(data.graves) do
+            if myIds[g.id] then
+                table.insert(data.removed, g.id)
+            else
+                table.insert(newG, g)
+            end
         end
-    end
-    data.graves = newG
-    pushGraves(data)
-    localGraves = {}
+        data.graves = newG
+        pushGraves(data)
+        localGraves = {}
+    end)
 end
 
--- ============================================================
--- POLLING
--- ============================================================
+-- ── Polling ───────────────────────────────────────────────
+-- Выносим в отдельный поток чтобы не лагал UI
 local pollTimer = 0
+local polling   = false
+
 RunService.Heartbeat:Connect(function(dt)
+    if not syncEnabled then return end
     pollTimer = pollTimer + dt
     if pollTimer < POLL_INTERVAL then return end
+    if polling then return end  -- пропускаем если предыдущий запрос ещё идёт
     pollTimer = 0
 
-    local data, version = fetchGraves()
-    if not data or not version then return end
-    if version <= lastVersion  then return end
-    lastVersion = version
+    polling = true
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local data, version = fetchGraves()
+            if not data or not version then return end
+            if version <= lastVersion  then return end
+            lastVersion = version
 
-    -- Удаляем помеченные
-    for _, id in ipairs(data.removed or {}) do
-        local m = builtModels[id]
-        if m and type(m) ~= "boolean" then m:Destroy() end
-        builtModels[id] = nil
-    end
+            for _, id in ipairs(data.removed or {}) do
+                local m = builtModels[id]
+                if m and type(m) ~= "boolean" then
+                    pcall(function() m:Destroy() end)
+                end
+                builtModels[id] = nil
+            end
 
-    -- Строим новые чужие
-    for _, payload in ipairs(data.graves or {}) do
-        if payload.owner ~= myClientId then
-            buildFromPayload(payload)
-        end
-    end
+            for _, payload in ipairs(data.graves or {}) do
+                if payload.owner ~= myClientId then
+                    buildFromPayload(payload)
+                end
+            end
+        end)
+        if not ok then warn("[GraveSync] poll error: "..tostring(err)) end
+        polling = false
+    end)
 end)
 
--- При запуске: читаем всё что уже есть
-task.defer(function()
+-- ── Стартовая синхронизация ───────────────────────────────
+task.delay(2, function()
+    if not syncEnabled then
+        warn("[GraveSync] Синхронизация недоступна — HTTP API клиента не найден")
+        return
+    end
     local data, version = fetchGraves()
-    if not data then return end
+    if not data then
+        warn("[GraveSync] Не удалось получить данные при старте")
+        return
+    end
     lastVersion = version or -1
     for _, payload in ipairs(data.graves or {}) do
         if payload.owner ~= myClientId then
-            buildFromPayload(payload)
+            pcall(buildFromPayload, payload)
         end
     end
-    print("[GraveSync] Стартовая синхронизация завершена. ClientId: "..myClientId)
+    print("[GraveSync] Стартовая синхронизация OK. Могил: "..#(data.graves or {}))
 end)
+
+print("[GraveSync] Запущен. ClientId: "..myClientId)
+print("[GraveSync] HTTP доступен: "..tostring(syncEnabled))
 
 -- ============================================================
 -- GUI
