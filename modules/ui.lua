@@ -19,7 +19,7 @@
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
-local TCP = getgenv().TCP
+local TCP = shared.TCP
 local Config    = TCP.Modules.Config
 local State     = TCP.Modules.State
 local Utils     = TCP.Modules.Utils
